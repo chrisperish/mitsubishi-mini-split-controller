@@ -4,6 +4,7 @@ import re
 import warnings
 from pathlib import Path
 
+import matplotlib.text
 import pytest
 
 import make_charts
@@ -28,11 +29,15 @@ def test_simulation_shape_matches_spec():
     assert a.t[0].hour == 18 and a.t[-1].hour == 18
     assert a.outdoor == c.outdoor                             # same weather for both runs
     assert 44 <= min(a.outdoor) <= 46 and 59 <= max(a.outdoor) <= 61
-    assert set(a.heat_sp) == {67} and set(a.cool_sp) == {73}  # matches restore.sh defaults
+    assert set(a.heat_sp) == {70} and set(a.cool_sp) == {72}  # fair run: aimed at the band
+    ref = simulate.stock_auto(heat=67, cool=73)                # restore.sh defaults, reference only
+    assert simulate.summarize(ref)["below"] > 0.5
     assert 73.8 <= max(c.true) <= 74.8                        # afternoon peak calibrated near 74.3F
     assert set(c.heat_sp) <= set(range(66, 72))
     assert all(y - x <= 1 for x, y in zip(c.heat_sp, c.heat_sp[1:]))   # raises are 1F at a time
-    assert simulate.summarize(c)["in_band"] > simulate.summarize(a)["in_band"]
+    sa, sc = simulate.summarize(a), simulate.summarize(c)
+    assert abs(sc["in_band"] - sa["in_band"]) < 0.05          # about equal on time in band
+    assert sc["cool_h"] < sa["cool_h"]                        # the real edge: less cooling
 
 
 def test_outcome_does_not_depend_on_seed():
@@ -47,11 +52,13 @@ def test_outcome_does_not_depend_on_seed():
 
 
 def test_charts_render_with_labels_and_no_warnings(tmp_path, monkeypatch):
-    texts = []
+    texts, per_fig = [], {}
     orig = make_charts.save
 
     def spy(fig, name, out):
-        texts.extend(t.get_text() for t in fig.findobj(lambda o: hasattr(o, "get_text")))
+        got = [t.get_text() for t in fig.findobj(lambda o: hasattr(o, "get_text"))]
+        per_fig[name] = [t.get_text() for t in fig.findobj(matplotlib.text.Text)]
+        texts.extend(got)
         orig(fig, name, out)
 
     monkeypatch.setattr(make_charts, "save", spy)
@@ -61,17 +68,19 @@ def test_charts_render_with_labels_and_no_warnings(tmp_path, monkeypatch):
     names = sorted(p.name for p in tmp_path.iterdir())
     assert names == sorted(f"illustrative-{n}.{e}" for n in ("chart1-timeline", "chart2-steering",
                                                               "chart3-time-in-band") for e in ("png", "svg"))
-    for label in ("In simulation, Stock Auto drifts;\nthe controller holds tighter.",
+    sa, sc = simulate.summarize(simulate.stock_auto()), simulate.summarize(simulate.controller())
+    c1 = [x for x in texts if x.startswith("Sun: flips to cooling at") or x.startswith("Stays in heat until 73F")
+          or x == "Setpoint steps down before the room overshoots"]
+    assert len(c1) == 3                                        # chart 1: exactly 3 callouts
+    assert any(f"cools {sa['cool_h']:.1f} h" in x for x in c1) and any(f"cools {sc['cool_h']:.1f} h" in x for x in c1)
+    c1_texts = next(v for k, v in per_fig.items() if "chart1" in k)
+    assert c1_texts.count("Heating") == 1 and c1_texts.count("Cooling") == 1   # chart 1: legend only
+    for label in ("In simulation, both hold the band about equally;\nthe controller cools less.",
                   "How the controller steers (simulated).", "Time in the comfort band (illustrative)",
-                  "Sits near its 67F heat setpoint, below the band", "Afternoon sun: flips to cooling",
-                  "Setpoint steps down before the room overshoots",
+                  "Stock Auto 70/72", "Stock Auto 67/73\n(not aimed at band)",
                   "Predicted to rise, so setpoint drops 1F", "Room temp", "Setpoint", "Heating", "Cooling"):
         assert label in texts, label
     assert texts.count(make_charts.ILLUSTRATIVE) == 6          # subtitle + corner on each chart
-    callouts = [x for x in texts if x in ("Sits near its 67F heat setpoint, below the band",
-                                          "Afternoon sun: flips to cooling",
-                                          "Setpoint steps down before the room overshoots")]
-    assert len(callouts) == 3                                  # chart 1: at most 3 callouts
 
 
 def test_committed_charts_and_no_data():
@@ -90,7 +99,19 @@ def test_readme_claims_are_qualified():
     assert "In simulation" in README.splitlines()[2]           # tagline
     for alt in re.findall(r"!\[([^\]]*)\]", README):
         assert alt.startswith("Simulated, not measured"), alt
-    assert "In the simulation in Chart 1" in README
+    assert "A 67/73 Auto (the defaults `scripts/restore.sh` puts back) is not trying to hold a 69 to 71°F band" in README
+    assert README.index("In the author's own trial") < README.index("## The problem")   # near the top
+    assert "toggles its heat setpoint between 69 and 70°F about every 30 minutes" in README
+    assert "mixed" not in README.splitlines()[2]
+
+
+def test_readme_numbers_match_simulation():
+    sa = simulate.summarize(simulate.stock_auto())
+    sc = simulate.summarize(simulate.controller())
+    sr = simulate.summarize(simulate.stock_auto(heat=67, cool=73))
+    assert f"({sa['in_band']:.0%} for Stock Auto, {sc['in_band']:.0%} for the controller)" in README
+    assert f"cools for {sa['cool_h']:.1f} hours" in README and f"cools for {sc['cool_h']:.1f} hours" in README
+    assert f"it spends {sr['below']:.0%} of the day below 69°F" in README
     for p in [ROOT / "README.md", *(ROOT / "scripts").glob("*.py"), *(ROOT / "src").rglob("*.py")]:
         t = p.read_text()
         assert "\u2014" not in t and "\u2013" not in t, p

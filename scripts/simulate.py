@@ -3,7 +3,8 @@
 A one-room thermal model is run for 24 h (6 PM to 6 PM) at 5-minute steps, twice, under the same
 outdoor temperature curve:
 
-* Stock Auto: heat setpoint 67F, cool setpoint 73F, the unit's own Auto changeover.
+* Stock Auto: heat setpoint 70F, cool setpoint 72F (aimed at the band), the unit's own Auto changeover.
+  A 67/73 run (the restore.sh defaults) is also computed for reference.
 * Both runs use the same modulating indoor-unit model (PI loop, minimum output, thermo-off).
 * Controller: the real decision code (minisplit_controller.logic.decide) drives the same room.
 
@@ -39,7 +40,8 @@ KP, KI = 1.5, 1.0    # PI gains (F/h per F, F/h per F per h)
 OFF_ABOVE = 1.0      # thermo-off once the room is this far past the setpoint ...
 ON_WITHIN = 0.0      # ... and back on when it returns to the setpoint
 CHANGEOVER_MIN = 15  # Auto changes mode after the room sits past the other setpoint this long
-AUTO_HEAT, AUTO_COOL = 67, 73   # stock Auto setpoints (the defaults restore.sh puts back)
+AUTO_HEAT, AUTO_COOL = 70, 72   # fair Stock Auto: setpoints aimed at the 69 to 71F band
+RESTORE_HEAT, RESTORE_COOL = 67, 73   # the defaults restore.sh puts back (not aimed at the band)
 
 
 @dataclass
@@ -100,22 +102,24 @@ def _room_step(T, q, h, dt):
     return T + (q - LOSS * (T - outdoor_f(h)) + sun(h)) * dt
 
 
-def stock_auto(seed=SEED):
-    """Stock Auto at 67/73. Mode changes come only from the room crossing the other setpoint.
+def stock_auto(seed=SEED, heat=None, cool=None):
+    """Stock Auto (default 70/72, aimed at the band). Mode changes come only from the room crossing the other setpoint.
     The seed only adds display noise; the dynamics are seed-independent."""
     rng = random.Random(seed)
+    heat = AUTO_HEAT if heat is None else heat
+    cool = AUTO_COOL if cool is None else cool
     r, T, unit, past = Run(), 70.0, Unit("heat"), 0
     dt = STEP_MIN / 60
     for h in steps():
         # Auto changeover: the room has stayed beyond the other side's setpoint for CHANGEOVER_MIN.
-        beyond = (T > AUTO_COOL) if unit.mode == "heat" else (T < AUTO_HEAT)
+        beyond = (T > cool) if unit.mode == "heat" else (T < heat)
         past = past + STEP_MIN if beyond else 0
         if past >= CHANGEOVER_MIN:
             unit, past = Unit("cool" if unit.mode == "heat" else "heat"), 0
-        sp = AUTO_HEAT if unit.mode == "heat" else AUTO_COOL
+        sp = heat if unit.mode == "heat" else cool
         q = unit.output(T, sp, dt)
         r.t.append(START + timedelta(hours=h)); r.outdoor.append(outdoor_f(h)); r.mode.append(unit.mode)
-        r.room.append(round(T + rng.uniform(-0.15, 0.15), 2)); r.heat_sp.append(AUTO_HEAT); r.cool_sp.append(AUTO_COOL)
+        r.room.append(round(T + rng.uniform(-0.15, 0.15), 2)); r.heat_sp.append(heat); r.cool_sp.append(cool)
         r.true.append(T)
         T = _room_step(T, q, h, dt)
     return r

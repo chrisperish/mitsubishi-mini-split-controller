@@ -124,15 +124,16 @@ def find_points(auto, ctl):
     drops = [i for i in range(1, len(ctl.t)) if ctl.heat_sp[i] < ctl.heat_sp[i - 1]
              and ctl.tp[i] is not None and ctl.tp[i] > ctl.room[i] and ctl.room[i] <= simulate.BAND[1]]
     drop = max(drops, key=lambda i: ctl.tp[i] - ctl.room[i])
-    return {"first_cool": first_cool, "low": low, "drop": drop, "drops": drops, "flips": flips}
+    ctl_cool = next((k for k in range(1, len(ctl.t)) if ctl.mode[k] == "cool" and ctl.mode[k - 1] != "cool"), None)
+    return {"ctl_cool": ctl_cool, "first_cool": first_cool, "low": low, "drop": drop, "drops": drops, "flips": flips}
 
 
 def chart1(auto, ctl, out):
     P = find_points(auto, ctl)
     fig, (top, bot) = plt.subplots(2, 1, figsize=FIG, sharex=True, sharey=True)
     fig.subplots_adjust(left=0.08, right=0.98, top=0.68, bottom=0.11, hspace=0.36)
-    for ax, r, name in ((top, auto, "Stock Auto"), (bot, ctl, "Controller")):
-        shade(ax, r.t, r.mode, label_y=75.15)
+    for ax, r, name in ((top, auto, f"Stock Auto {simulate.AUTO_HEAT}/{simulate.AUTO_COOL}"), (bot, ctl, "Controller")):
+        shade(ax, r.t, r.mode)   # Heating/Cooling are named once, in the legend
         band(ax)
         ax.plot(r.t, r.room, color=ROOM, lw=2, zorder=4)
         ax.set_ylim(64, 75)
@@ -141,14 +142,14 @@ def chart1(auto, ctl, out):
     top.step(auto.t, auto.heat_sp, where="post", color=HEAT_SP, lw=1)
     top.step(auto.t, auto.cool_sp, where="post", color=COOL_SP, lw=1)
     bot.step(ctl.t, ctl.heat_sp, where="post", color=HEAT_SP, lw=1.6)
-    # Chart 1 carries exactly 3 callouts: two on Stock Auto, one on the controller.
-    i = P["low"]
-    callout(top, f"Sits near its {simulate.AUTO_HEAT}F heat setpoint, below the band",
-            (auto.t[i], auto.room[i]), (auto.t[i] - timedelta(hours=6.5), 65.0))
-    if P["first_cool"] is not None:
-        i = P["first_cool"]
-        callout(top, "Afternoon sun: flips to cooling", (auto.t[i], auto.room[i]),
-                (auto.t[i] - timedelta(hours=1.6), 72.6), ha="right")
+    # Chart 1 carries exactly 3 callouts: one on Stock Auto, two on the controller.
+    sa, sc = simulate.summarize(auto), simulate.summarize(ctl)
+    i = P["first_cool"]
+    callout(top, f"Sun: flips to cooling at {auto.t[i]:%-I:%M %p}, cools {sa['cool_h']:.1f} h",
+            (auto.t[i], auto.room[i]), (auto.t[i] - timedelta(hours=1.5), 66.0), ha="right")
+    j = P["ctl_cool"]
+    callout(bot, f"Stays in heat until 73F, cools {sc['cool_h']:.1f} h",
+            (ctl.t[j], ctl.room[j]), (ctl.t[j] - timedelta(hours=1.0), 72.8), ha="right")
     i = P["drop"]
     callout(bot, "Setpoint steps down before the room overshoots", (ctl.t[i], ctl.heat_sp[i]),
             (ctl.t[i] + timedelta(hours=0.8), 65.0) if ctl.t[i] - ctl.t[0] < timedelta(hours=12)
@@ -160,7 +161,7 @@ def chart1(auto, ctl, out):
                Line2D([], [], color=HEAT_SP, lw=1.4, label="Setpoint"),
                Patch(color=HEAT, alpha=0.25, label="Heating"), Patch(color=COOL, alpha=0.25, label="Cooling")]
     top.legend(handles=handles, ncol=4, loc="lower right", bbox_to_anchor=(1.0, 1.13))
-    title(fig, "In simulation, Stock Auto drifts;\nthe controller holds tighter.")
+    title(fig, "In simulation, both hold the band about equally;\nthe controller cools less.")
     save(fig, "illustrative-chart1-timeline", out)
     return P
 
@@ -212,21 +213,24 @@ def bars(ax, rows):
     ax.legend(ncol=3, loc="lower left", bbox_to_anchor=(0, 1.0), fontsize=10)
 
 
-def chart3(sa, sc, out):
+def chart3(rows, out):
     fig, ax = plt.subplots(figsize=FIG)
-    fig.subplots_adjust(left=0.20, right=0.96, top=0.70, bottom=0.12)
-    bars(ax, [("Stock Auto", sa), ("Controller", sc)])
+    fig.subplots_adjust(left=0.27, right=0.96, top=0.70, bottom=0.12)
+    bars(ax, rows)
     title(fig, "Time in the comfort band (illustrative)", x=0.03)
     save(fig, "illustrative-chart3-time-in-band", out)
 
 
 def illustrative(out=OUT):
     auto, ctl = simulate.stock_auto(), simulate.controller()
-    sa, sc = simulate.summarize(auto), simulate.summarize(ctl)
+    ref = simulate.stock_auto(heat=simulate.RESTORE_HEAT, cool=simulate.RESTORE_COOL)
+    sa, sc, sr = simulate.summarize(auto), simulate.summarize(ctl), simulate.summarize(ref)
     P = chart1(auto, ctl, out)
     win = chart2(ctl, P, out)
-    chart3(sa, sc, out)
-    return {"auto": sa, "controller": sc, "points": P, "zoom": win, "auto_run": auto, "ctl_run": ctl}
+    chart3([(f"Stock Auto {simulate.AUTO_HEAT}/{simulate.AUTO_COOL}\ncools {sa['cool_h']:.1f} h", sa),
+            (f"Controller\ncools {sc['cool_h']:.1f} h", sc),
+            (f"Stock Auto {simulate.RESTORE_HEAT}/{simulate.RESTORE_COOL}\n(not aimed at band)", sr)], out)
+    return {"auto": sa, "controller": sc, "auto_6773": sr, "points": P, "zoom": win, "auto_run": auto, "ctl_run": ctl}
 
 
 # ------------------------------------------------------------------ your own log
@@ -299,7 +303,7 @@ def main(argv=None):
         print(f"wrote {out}/log-timeline.* and {out}/log-time-in-band.*")
         return
     res = illustrative(Path(a.out) if a.out else OUT)
-    for k in ("auto", "controller"):
+    for k in ("auto", "controller", "auto_6773"):
         d = res[k]
         print(f"{k}: below {d['below']:.0%} in band {d['in_band']:.0%} above {d['above']:.0%} "
               f"flips {d['flips']} cooling {d['cool_h']:.1f} h (outdoor < 50F: {d['cool_cold_h']:.1f} h) "

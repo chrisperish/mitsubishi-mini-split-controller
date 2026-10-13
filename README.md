@@ -1,12 +1,14 @@
 # Mitsubishi Mini-Split Controller
 
-**A small controller that tries to make a Mitsubishi mini-split hold one steady temperature. In simulation it holds tighter than Stock Auto; real results so far are mixed.**
+**A small controller that keeps a Mitsubishi mini-split in heat and steers its setpoint toward 70°F. In simulation it matches a band-aimed Stock Auto on time in band and cools less; it has not yet beaten the author's earlier version in a real trial.**
 
-![Simulated, not measured: Stock Auto sits near 67°F overnight and flips to cooling in afternoon sun, while the controller holds closer to the comfort band](docs/charts/illustrative-chart1-timeline.png)
+![Simulated, not measured: Stock Auto at 70/72 and the controller both stay near the band; Stock Auto switches to cooling earlier in afternoon sun and cools longer](docs/charts/illustrative-chart1-timeline.png)
+
+In the author's own trial, real logs showed that v2 (this controller) has not yet beaten v1 (an earlier heat/cool switching version) on time in band (roughly 44% vs 71%), and that strong afternoon sun pushed the room above the band.
 
 ## The problem
 
-Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint (67 and 73°F by default here) and only changes mode when the room crosses the other one. Everything between the two setpoints is left alone, so the room can sit anywhere in a 6°F range. In the simulation in Chart 1, Stock Auto parks the room near its 67°F heat setpoint all night, below a 69 to 71°F comfort band, and then lets afternoon sun carry it past 73°F before it switches to cooling. In the same simulation, the controller steers the heat setpoint from a short-term prediction and keeps the room nearer 70°F, cooling only after sun pushes the room to 73°F.
+Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint and only changes mode when the room crosses the other one. A 67/73 Auto (the defaults `scripts/restore.sh` puts back) is not trying to hold a 69 to 71°F band at all: in the same simulation it spends 73% of the day below 69°F. A fair comparison sets Auto to 70/72, aimed at the band, and that is what Chart 1 shows. In that simulation both hold the band about equally (75% for Stock Auto, 77% for the controller); the difference is cooling. Stock Auto switches to cooling as soon as afternoon sun takes the room past 72°F and cools for 4.2 hours, while the controller stays in heat until the room holds 73°F and cools for 2.7 hours.
 
 ## How it works
 
@@ -46,9 +48,9 @@ T is the wireless sensor reading if it is at most 20 minutes old, else the unit'
 
 Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate.
 
-The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 67/73°F and its own changeover, and once driven by this controller's real decision code. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
+The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
 
-In the author's own trial, real logs showed that v2 (this controller) has not yet beaten v1 (an earlier heat/cool switching version) on time in band (roughly 44% vs 71%), and that strong afternoon sun pushed the room above the band.
+Overnight the controller toggles its heat setpoint between 69 and 70°F about every 30 minutes, because the predicted temperature sits right on a table threshold. The unit only sees a 1°F nudge each time, so the room stays steady.
 
 ## Setup
 
