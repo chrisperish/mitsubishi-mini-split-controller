@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="576pt" height="324pt" viewBox="0 0 576 324" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 324 
+L 576 324 
+L 576 0 
+L 0 0 
+z
+" style="fill: #fafaf9"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 115.2 285.12 
+L 552.96 285.12 
+L 552.96 97.2 
+L 115.2 97.2 
+z
+" style="fill: #fafaf9"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 115.2 105.741818 
+L 434.4 105.741818 
+L 434.4 166.361173 
+L 115.2 166.361173 
+z
+" clip-path="url(#p9ac1f8718b)" style="fill: #93c5fd"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 434.4 105.741818 
+L 495.2 105.741818 
+L 495.2 166.361173 
+L 434.4 166.361173 
+z
+" clip-path="url(#p9ac1f8718b)" style="fill: #10b981"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 495.2 105.741818 
+L 552.96 105.741818 
+L 552.96 166.361173 
+L 495.2 166.361173 
+z
+" clip-path="url(#p9ac1f8718b)" style="fill: #fdba74"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 115.2 215.958827 
+L 133.44 215.958827 
+L 133.44 276.578182 
+L 115.2 276.578182 
+z
+" clip-path="url(#p9ac1f8718b)" style="fill: #93c5fd"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 133.44 215.958827 
+L 472.4 215.958827 
+L 472.4 276.578182 
+L 133.44 276.578182 
+z
+" clip-path="url(#p9ac1f8718b)" style="fill: #10b981"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 472.4 215.958827 
+L 552.96 215.958827 
+L 552.96 276.578182 
+L 472.4 276.578182 
+z
+" clip-path="url(#p9ac1f8718b)" style="fill: #fdba74"/>
+   </g>
+   <g id="matplotlib.axis_1"/>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_1">
+      <defs>
+       <path id="m4b60b3d631" d="M 0 0 
+L -3.5 0 
+" style="stroke: #57534e; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m4b60b3d631" x="115.2" y="136.051496" style="fill: #57534e; stroke: #57534e; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_1">
+      <text style="font-size: 11px; font-family: 'DejaVu Sans', sans-serif; text-anchor: end; fill: #57534e" x="108.2" y="140.230636" transform="rotate(-0 108.2 140.230636)">Stock Auto</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_2">
+      <g>
+       <use xlink:href="#m4b60b3d631" x="115.2" y="246.268504" style="fill: #57534e; stroke: #57534e; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_2">
+      <text style="font-size: 11px; font-family: 'DejaVu Sans', sans-serif; text-anchor: end; fill: #57534e" x="108.2" y="250.447645" transform="rotate(-0 108.2 250.447645)">Controller</text>
+     </g>
+    </g>
+   </g>
+   <g id="patch_9">
+    <path d="M 115.2 285.12 
+L 115.2 97.2 
+" style="fill: none; stroke: #e7e5e4; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 115.2 285.12 
+L 552.96 285.12 
+" style="fill: none; stroke: #e7e5e4; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 10px; font-family: 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #1c1917" x="274.8" y="138.649152" transform="rotate(-0 274.8 138.649152)">73%</text>
+   </g>
+   <g id="text_4">
+    <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #ffffff" x="464.8" y="141.246808" transform="rotate(-0 464.8 141.246808)">14%</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 10px; font-family: 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #1c1917" x="524.08" y="138.649152" transform="rotate(-0 524.08 138.649152)">13%</text>
+   </g>
+   <g id="text_6">
+    <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #ffffff" x="302.92" y="251.463817" transform="rotate(-0 302.92 251.463817)">77%</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 10px; font-family: 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #1c1917" x="512.68" y="248.866161" transform="rotate(-0 512.68 248.866161)">18%</text>
+   </g>
+   <g id="legend_1">
+    <g id="patch_11">
+     <path d="M 124.2 85.797656 
+L 144.2 85.797656 
+L 144.2 78.797656 
+L 124.2 78.797656 
+z
+" style="fill: #93c5fd"/>
+    </g>
+    <g id="text_8">
+     <text style="font-size: 10px; font-family: 'DejaVu Sans', sans-serif; text-anchor: start; fill: #57534e" x="152.2" y="85.797656" transform="rotate(-0 152.2 85.797656)">Below 69°F</text>
+    </g>
+    <g id="patch_12">
+     <path d="M 228.94375 85.797656 
+L 248.94375 85.797656 
+L 248.94375 78.797656 
+L 228.94375 78.797656 
+z
+" style="fill: #10b981"/>
+    </g>
+    <g id="text_9">
+     <text style="font-size: 10px; font-family: 'DejaVu Sans', sans-serif; text-anchor: start; fill: #57534e" x="256.94375" y="85.797656" transform="rotate(-0 256.94375 85.797656)">69 to 71°F</text>
+    </g>
+    <g id="patch_13">
+     <path d="M 329.540625 85.797656 
+L 349.540625 85.797656 
+L 349.540625 78.797656 
+L 329.540625 78.797656 
+z
+" style="fill: #fdba74"/>
+    </g>
+    <g id="text_10">
+     <text style="font-size: 10px; font-family: 'DejaVu Sans', sans-serif; text-anchor: start; fill: #57534e" x="357.540625" y="85.797656" transform="rotate(-0 357.540625 85.797656)">Above 71°F</text>
+    </g>
+   </g>
+  </g>
+  <g id="text_11">
+   <text style="font-weight: 700; font-size: 16px; font-family: 'DejaVu Sans', sans-serif; text-anchor: start; fill: #1c1917" x="17.28" y="23.4975" transform="rotate(-0 17.28 23.4975)">Time in the comfort band (illustrative)</text>
+  </g>
+  <g id="text_12">
+   <text style="font-size: 11px; font-family: 'DejaVu Sans', sans-serif; text-anchor: start; fill: #57534e" x="17.28" y="42.378281" transform="rotate(-0 17.28 42.378281)">Illustrative simulation, not measured data.</text>
+  </g>
+  <g id="text_13">
+   <text style="font-size: 7px; font-family: 'DejaVu Sans', sans-serif; text-anchor: end; fill: #a8a29e" x="570.24" y="318.430359" transform="rotate(-0 570.24 318.430359)">Illustrative simulation, not measured data.</text>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p9ac1f8718b">
+   <rect x="115.2" y="97.2" width="437.76" height="187.92"/>
+  </clipPath>
+ </defs>
+</svg>

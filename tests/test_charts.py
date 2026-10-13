@@ -28,13 +28,22 @@ def test_simulation_shape_matches_spec():
     assert a.t[0].hour == 18 and a.t[-1].hour == 18
     assert a.outdoor == c.outdoor                             # same weather for both runs
     assert 44 <= min(a.outdoor) <= 46 and 59 <= max(a.outdoor) <= 61
-    sa, sc = simulate.summarize(a), simulate.summarize(c)
-    assert 4 <= sa["flips"] <= 6 and 1 <= sa["cool_cold_h"] <= 2
-    assert 72 <= sa["max"] <= 73 and 67 <= sa["min"] <= 68
-    assert sc["flips"] == 0 and set(c.mode) == {"heat"}
+    assert set(a.heat_sp) == {67} and set(a.cool_sp) == {73}  # matches restore.sh defaults
+    assert 73.8 <= max(c.true) <= 74.8                        # afternoon peak calibrated near 74.3F
     assert set(c.heat_sp) <= set(range(66, 72))
     assert all(y - x <= 1 for x, y in zip(c.heat_sp, c.heat_sp[1:]))   # raises are 1F at a time
-    assert sc["in_band"] > sa["in_band"]
+    assert simulate.summarize(c)["in_band"] > simulate.summarize(a)["in_band"]
+
+
+def test_outcome_does_not_depend_on_seed():
+    base_a, base_c = simulate.stock_auto(0), simulate.controller(0)
+    for seed in range(21):
+        a, c = simulate.stock_auto(seed), simulate.controller(seed)
+        assert a.true == base_a.true and a.mode == base_a.mode
+        assert c.true == base_c.true and c.mode == base_c.mode and c.heat_sp == base_c.heat_sp
+        for r, base in ((a, base_a), (c, base_c)):
+            s, s0 = simulate.summarize(r), simulate.summarize(base)
+            assert abs(s["in_band"] - s0["in_band"]) < 0.03
 
 
 def test_charts_render_with_labels_and_no_warnings(tmp_path, monkeypatch):
@@ -52,12 +61,17 @@ def test_charts_render_with_labels_and_no_warnings(tmp_path, monkeypatch):
     names = sorted(p.name for p in tmp_path.iterdir())
     assert names == sorted(f"illustrative-{n}.{e}" for n in ("chart1-timeline", "chart2-steering",
                                                               "chart3-time-in-band") for e in ("png", "svg"))
-    for label in ("Stock Auto drifts. The controller holds.", "How the controller steers.",
-                  "Time in the comfort band (illustrative)", "Overshoot", "Flips to cooling",
-                  "Cooling on a cold night", "Setpoint steps down before the room overshoots",
+    for label in ("In simulation, Stock Auto drifts;\nthe controller holds tighter.",
+                  "How the controller steers (simulated).", "Time in the comfort band (illustrative)",
+                  "Sits near its 67F heat setpoint, below the band", "Afternoon sun: flips to cooling",
+                  "Setpoint steps down before the room overshoots",
                   "Predicted to rise, so setpoint drops 1F", "Room temp", "Setpoint", "Heating", "Cooling"):
         assert label in texts, label
     assert texts.count(make_charts.ILLUSTRATIVE) == 6          # subtitle + corner on each chart
+    callouts = [x for x in texts if x in ("Sits near its 67F heat setpoint, below the band",
+                                          "Afternoon sun: flips to cooling",
+                                          "Setpoint steps down before the room overshoots")]
+    assert len(callouts) == 3                                  # chart 1: at most 3 callouts
 
 
 def test_committed_charts_and_no_data():
@@ -66,16 +80,26 @@ def test_committed_charts_and_no_data():
     assert not (ROOT / "data").exists()
 
 
-def test_readme_has_no_real_data_claims():
+def test_readme_claims_are_qualified():
     assert "Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate." in README
     assert "The controller writes its own log so you can chart your real results." in README
     assert "## What to expect" in README and "## Results" not in README
-    for bad in ("52%", "6.2 h", "4.6 h", "72.1", "68.4", "70.3", "40-48", "v1", "v2", "Oct "):
-        assert bad not in README, bad
+    assert ("In the author's own trial, real logs showed that v2 (this controller) has not yet beaten v1 "
+            "(an earlier heat/cool switching version) on time in band (roughly 44% vs 71%), and that strong "
+            "afternoon sun pushed the room above the band.") in README
+    assert "In simulation" in README.splitlines()[2]           # tagline
+    for alt in re.findall(r"!\[([^\]]*)\]", README):
+        assert alt.startswith("Simulated, not measured"), alt
+    assert "In the simulation in Chart 1" in README
     for p in [ROOT / "README.md", *(ROOT / "scripts").glob("*.py"), *(ROOT / "src").rglob("*.py")]:
         t = p.read_text()
         assert "\u2014" not in t and "\u2013" not in t, p
         assert ("ro" + "of") not in t.lower(), p
+
+
+def test_gitignore_keeps_docs_charts():
+    lines = (ROOT / ".gitignore").read_text().split()
+    assert "/charts/" in lines and "charts/" not in lines
 
 
 def test_from_log(tmp_path):

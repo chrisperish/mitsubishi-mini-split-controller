@@ -3,11 +3,11 @@
 A one-room thermal model is run for 24 h (6 PM to 6 PM) at 5-minute steps, twice, under the same
 outdoor temperature curve:
 
-* Stock Auto: heat setpoint 68F, cool setpoint 72F. The unit keeps heating past its setpoint until
-  the room crosses the cool side, flips to cool, overcools, and flips back.
+* Stock Auto: heat setpoint 67F, cool setpoint 73F, the unit's own Auto changeover.
+* Both runs use the same modulating indoor-unit model (PI loop, minimum output, thermo-off).
 * Controller: the real decision code (minisplit_controller.logic.decide) drives the same room.
 
-Everything is deterministic: noise comes from random.Random(SEED).
+The dynamics never use random numbers. The seed only adds display noise to the plotted room temp.
 """
 from __future__ import annotations
 
@@ -30,15 +30,16 @@ BAND = (69.0, 71.0)
 
 # Room model (F and hours). Heat loss is proportional to the indoor/outdoor difference.
 LOSS = 0.06          # 1/h
-SUN_PEAK = 0.8       # F/h of solar gain at 1 PM
-HEAT_MAX = 3.5       # F/h the unit can add at full output
-HEAT_GAIN = 2.0      # 1/h: inverter output per F of error
-HEAT_OFFSET = 2.8    # F: the unit settles this far above its heat setpoint (sensor at the unit runs cool)
-TRIM0 = 1
-COOL_MAX = 3.0       # F/h the unit can remove at full output
-AUTO_HEAT_P = 1.8    # F/h: Auto heating runs at a fixed output until it crosses the cool side
-AUTO_FLIP_UP = 72.5  # Auto flips heat -> cool here (about 0.5F past the cool setpoint)
-AUTO_FLIP_DOWN = 67.5  # and cool -> heat here (about 0.5F below the heat setpoint)
+SUN_PEAK = 2.8       # F/h of solar gain at the afternoon peak (calibrated in README "What to expect")
+SUN_PEAK_CLOCK = 16.0
+# Indoor unit: an inverter that modulates its output with a PI loop on its own setpoint.
+Q_MAX = 4.0          # F/h at full output, heat or cool
+Q_MIN = 0.8          # F/h: the compressor cannot run slower than this; below it the unit cycles off
+KP, KI = 1.5, 1.0    # PI gains (F/h per F, F/h per F per h)
+OFF_ABOVE = 1.0      # thermo-off once the room is this far past the setpoint ...
+ON_WITHIN = 0.0      # ... and back on when it returns to the setpoint
+CHANGEOVER_MIN = 15  # Auto changes mode after the room sits past the other setpoint this long
+AUTO_HEAT, AUTO_COOL = 67, 73   # stock Auto setpoints (the defaults restore.sh puts back)
 
 
 @dataclass
@@ -50,17 +51,24 @@ class Run:
     heat_sp: list = field(default_factory=list)
     cool_sp: list = field(default_factory=list)
     tp: list = field(default_factory=list)       # controller only: predicted temp 15 min ahead
+    true: list = field(default_factory=list)     # room temp before display noise
 
 
 def outdoor_f(h):
-    """Smooth outdoor curve: about 45F through the night, about 60F at midday (h = hours since 6 PM)."""
+    """Smooth outdoor curve: 60F at 1 PM, 45F at 1 AM (h = hours since 6 PM)."""
     clock = (18 + h) % 24
-    return 52.5 + 7.5 * math.cos((clock - 13) / 24 * 2 * math.pi)   # 60F at 1 PM, 45F at 1 AM
+    return 52.5 + 7.5 * math.cos((clock - 13) / 24 * 2 * math.pi)
 
 
 def sun(h):
+    """Solar gain in F/h: zero at night, a smooth bump from 9 AM to 7 PM peaking mid-afternoon."""
     clock = (18 + h) % 24
-    return SUN_PEAK * max(0.0, math.sin((clock - 8) / 10 * math.pi)) if 8 <= clock <= 18 else 0.0
+    if not 9 <= clock <= 19:
+        return 0.0
+    x = (clock - 9) / (19 - 9)
+    peak = (SUN_PEAK_CLOCK - 9) / (19 - 9)
+    shape = math.sin(math.pi * x ** (math.log(0.5) / math.log(peak)))   # skewed so it peaks at SUN_PEAK_CLOCK
+    return SUN_PEAK * shape
 
 
 def steps():
@@ -68,48 +76,73 @@ def steps():
     return [i * STEP_MIN / 60 for i in range(n + 1)]
 
 
+class Unit:
+    """Modulating heat pump: PI on its own setpoint, a minimum output, and thermo-off past the setpoint."""
+
+    def __init__(self, mode):
+        self.mode, self.i, self.on = mode, 0.0, True
+
+    def output(self, T, sp, dt):
+        """Heat added to the room in F/h (negative when cooling)."""
+        err = (sp - T) if self.mode == "heat" else (T - sp)        # positive = demand
+        if self.on and err < -OFF_ABOVE:
+            self.on, self.i = False, 0.0
+        elif not self.on and err > -ON_WITHIN:
+            self.on = True
+        if not self.on:
+            return 0.0
+        self.i = max(0.0, min(Q_MAX, self.i + KI * err * dt))
+        q = max(Q_MIN, min(Q_MAX, KP * err + self.i))
+        return q if self.mode == "heat" else -q
+
+
+def _room_step(T, q, h, dt):
+    return T + (q - LOSS * (T - outdoor_f(h)) + sun(h)) * dt
+
+
 def stock_auto(seed=SEED):
+    """Stock Auto at 67/73. Mode changes come only from the room crossing the other setpoint.
+    The seed only adds display noise; the dynamics are seed-independent."""
     rng = random.Random(seed)
-    r, T, mode = Run(), 70.0, "heat"
+    r, T, unit, past = Run(), 70.0, Unit("heat"), 0
     dt = STEP_MIN / 60
     for h in steps():
-        out = outdoor_f(h)
-        if mode == "heat" and T >= AUTO_FLIP_UP:
-            mode = "cool"
-        elif mode == "cool" and T <= AUTO_FLIP_DOWN:
-            mode = "heat"
-        power = AUTO_HEAT_P if mode == "heat" else -COOL_MAX
-        r.t.append(START + timedelta(hours=h)); r.outdoor.append(out); r.mode.append(mode)
-        r.room.append(round(T + rng.uniform(-0.15, 0.15), 2)); r.heat_sp.append(68); r.cool_sp.append(72)
-        T += (power - LOSS * (T - out) + sun(h)) * dt
+        # Auto changeover: the room has stayed beyond the other side's setpoint for CHANGEOVER_MIN.
+        beyond = (T > AUTO_COOL) if unit.mode == "heat" else (T < AUTO_HEAT)
+        past = past + STEP_MIN if beyond else 0
+        if past >= CHANGEOVER_MIN:
+            unit, past = Unit("cool" if unit.mode == "heat" else "heat"), 0
+        sp = AUTO_HEAT if unit.mode == "heat" else AUTO_COOL
+        q = unit.output(T, sp, dt)
+        r.t.append(START + timedelta(hours=h)); r.outdoor.append(outdoor_f(h)); r.mode.append(unit.mode)
+        r.room.append(round(T + rng.uniform(-0.15, 0.15), 2)); r.heat_sp.append(AUTO_HEAT); r.cool_sp.append(AUTO_COOL)
+        r.true.append(T)
+        T = _room_step(T, q, h, dt)
     return r
 
 
 def controller(seed=SEED, tuning=None):
+    """The real decision code (logic.decide) every 10 min driving the same modulating unit.
+    It reads a sensor that reports in 0.3F steps. The seed only adds display noise."""
     rng = random.Random(seed)
     t = tuning or Tuning()
-    r, T = Run(), 70.4
+    r, T = Run(), 70.0
     dt = STEP_MIN / 60
     state = default_state(0.0)
-    state["trim"] = TRIM0            # as if an earlier 3 h trim had found this room running cool
-    sp, mode, csp = 68, "heat", t.cool_park
+    unit = Unit("heat")
+    sp, csp, tp = 68, t.cool_park, None
     for i, h in enumerate(steps()):
-        out = outdoor_f(h)
-        shown = round(T + rng.uniform(-0.1, 0.1), 2)   # plotted room temp: +/-0.1F noise
-        if i % 2 == 0:                       # the controller runs every 10 minutes
-            # The controller sees a sensor that reports in 0.3F steps, like the wireless sensor.
+        if i % 2 == 0:
             meas = round(round(T / 0.3) * 0.3, 1)
-            desired, state, info, _ = decide(meas, state, h * 3600, {"mode": mode, "heat_setpoint": sp}, t)
-            sp, csp, mode = desired["heat_setpoint"], desired["cool_setpoint"], desired["mode"]
-            tp = info["Tp"]
-        if mode == "heat":   # inverter: output proportional to the error against setpoint + offset
-            power = max(0.0, min(HEAT_MAX, HEAT_GAIN * (sp + HEAT_OFFSET - T)))
-        else:
-            power = -max(0.0, min(COOL_MAX, 2.0 * (T - csp)))
-        r.t.append(START + timedelta(hours=h)); r.outdoor.append(out); r.mode.append(mode)
-        r.room.append(shown); r.heat_sp.append(sp); r.cool_sp.append(csp)
-        r.tp.append(tp)
-        T += (power - LOSS * (T - out) + sun(h)) * dt
+            desired, state, info, _ = decide(meas, state, h * 3600, {"mode": unit.mode, "heat_setpoint": sp}, t)
+            if desired["mode"] != unit.mode:
+                unit = Unit(desired["mode"])
+            sp, csp, tp = desired["heat_setpoint"], desired["cool_setpoint"], info["Tp"]
+        q = unit.output(T, sp if unit.mode == "heat" else csp, dt)
+        r.t.append(START + timedelta(hours=h)); r.outdoor.append(outdoor_f(h)); r.mode.append(unit.mode)
+        r.room.append(round(T + rng.uniform(-0.1, 0.1), 2)); r.heat_sp.append(sp); r.cool_sp.append(csp)
+        r.tp.append(tp); r.true.append(T)
+        T = _room_step(T, q, h, dt)
     return r
 
 

@@ -6,4 +6,4 @@ __pycache__/
 var/
 config.toml
 .env
-charts/
+/charts/

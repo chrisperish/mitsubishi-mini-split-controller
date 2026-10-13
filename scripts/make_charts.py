@@ -55,7 +55,7 @@ plt.rcParams.update({
 def title(fig, text, sub=ILLUSTRATIVE, x=0.08):
     fig.text(x, 0.965, text, fontsize=16, fontweight="bold", color=ROOM, ha="left", va="top")
     if sub:
-        fig.text(x, 0.895, sub, fontsize=11, color=AXIS, ha="left", va="top")
+        fig.text(x, 0.965 - 0.07 * (text.count("\n") + 1), sub, fontsize=11, color=AXIS, ha="left", va="top")
         fig.text(0.99, 0.012, sub, fontsize=7, color=OUTDOOR, ha="right", va="bottom")
 
 
@@ -82,7 +82,7 @@ def shade(ax, t, mode, label_y=None):
         ax.axvspan(a, b, color=HEAT if m == "heat" else COOL, alpha=0.10, lw=0, zorder=0)
         if label_y is not None and (b - a) >= timedelta(minutes=50):
             ax.text(a + (b - a) / 2, label_y, "Heating" if m == "heat" else "Cooling", fontsize=8.5,
-                    ha="center", va="center", color=HEAT_SP if m == "heat" else COOL_SP)
+                    ha="center", va="bottom", clip_on=False, color=HEAT_SP if m == "heat" else COOL_SP)
 
 
 def time_axis(ax, every=3):
@@ -118,22 +118,21 @@ def save(fig, name, out):
 def find_points(auto, ctl):
     """Locate callout anchors in the simulated series (no hardcoded times)."""
     flips = [i for i in range(1, len(auto.t)) if auto.mode[i] != auto.mode[i - 1]]
-    first_cool = next(i for i in flips if auto.mode[i] == "cool")
-    peak = max(range(first_cool), key=lambda i: auto.room[i])
-    cold = [i for i in range(len(auto.t)) if auto.mode[i] == "cool" and auto.outdoor[i] < 50]
-    cold_mid = cold[len(cold) // 2]
+    first_cool = next((i for i in flips if auto.mode[i] == "cool"), None)
+    night = [i for i in range(len(auto.t)) if auto.t[i].hour in (1, 2, 3, 4)]
+    low = night[len(night) // 2]                     # middle of the night, Auto parked at its heat setpoint
     drops = [i for i in range(1, len(ctl.t)) if ctl.heat_sp[i] < ctl.heat_sp[i - 1]
-             and ctl.tp[i] is not None and ctl.tp[i] > ctl.room[i]]
+             and ctl.tp[i] is not None and ctl.tp[i] > ctl.room[i] and ctl.room[i] <= simulate.BAND[1]]
     drop = max(drops, key=lambda i: ctl.tp[i] - ctl.room[i])
-    return {"peak": peak, "first_cool": first_cool, "cold_mid": cold_mid, "drop": drop, "drops": drops}
+    return {"first_cool": first_cool, "low": low, "drop": drop, "drops": drops, "flips": flips}
 
 
 def chart1(auto, ctl, out):
     P = find_points(auto, ctl)
     fig, (top, bot) = plt.subplots(2, 1, figsize=FIG, sharex=True, sharey=True)
-    fig.subplots_adjust(left=0.08, right=0.98, top=0.74, bottom=0.11, hspace=0.28)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.68, bottom=0.11, hspace=0.36)
     for ax, r, name in ((top, auto, "Stock Auto"), (bot, ctl, "Controller")):
-        shade(ax, r.t, r.mode, label_y=74.2)
+        shade(ax, r.t, r.mode, label_y=75.15)
         band(ax)
         ax.plot(r.t, r.room, color=ROOM, lw=2, zorder=4)
         ax.set_ylim(64, 75)
@@ -142,23 +141,26 @@ def chart1(auto, ctl, out):
     top.step(auto.t, auto.heat_sp, where="post", color=HEAT_SP, lw=1)
     top.step(auto.t, auto.cool_sp, where="post", color=COOL_SP, lw=1)
     bot.step(ctl.t, ctl.heat_sp, where="post", color=HEAT_SP, lw=1.6)
-    i = P["peak"]
-    callout(top, "Overshoot", (auto.t[i], auto.room[i]), (auto.t[i] - timedelta(hours=4.2), 73.2))
-    i = P["first_cool"]
-    callout(top, "Flips to cooling", (auto.t[i], auto.room[i]), (auto.t[i] + timedelta(hours=2.0), 72.8))
-    i = P["cold_mid"]
-    callout(top, "Cooling on a cold night", (auto.t[i], auto.room[i]), (auto.t[i] + timedelta(hours=2.5), 65.6))
+    # Chart 1 carries exactly 3 callouts: two on Stock Auto, one on the controller.
+    i = P["low"]
+    callout(top, f"Sits near its {simulate.AUTO_HEAT}F heat setpoint, below the band",
+            (auto.t[i], auto.room[i]), (auto.t[i] - timedelta(hours=6.5), 65.0))
+    if P["first_cool"] is not None:
+        i = P["first_cool"]
+        callout(top, "Afternoon sun: flips to cooling", (auto.t[i], auto.room[i]),
+                (auto.t[i] - timedelta(hours=1.6), 72.6), ha="right")
     i = P["drop"]
     callout(bot, "Setpoint steps down before the room overshoots", (ctl.t[i], ctl.heat_sp[i]),
-            (ctl.t[i] - timedelta(hours=9), 65.2))
+            (ctl.t[i] + timedelta(hours=0.8), 65.0) if ctl.t[i] - ctl.t[0] < timedelta(hours=12)
+            else (ctl.t[i] - timedelta(hours=0.8), 65.0), ha="left" if ctl.t[i] - ctl.t[0] < timedelta(hours=12) else "right")
     time_axis(bot)
     bot.set_xlabel("Time")
     fig.text(0.015, 0.43, "Room temp (°F)", rotation=90, va="center", fontsize=12, color=AXIS)
     handles = [Line2D([], [], color=ROOM, lw=2, label="Room temp"),
                Line2D([], [], color=HEAT_SP, lw=1.4, label="Setpoint"),
                Patch(color=HEAT, alpha=0.25, label="Heating"), Patch(color=COOL, alpha=0.25, label="Cooling")]
-    top.legend(handles=handles, ncol=4, loc="lower right", bbox_to_anchor=(1.0, 1.0))
-    title(fig, "Stock Auto drifts. The controller holds.")
+    top.legend(handles=handles, ncol=4, loc="lower right", bbox_to_anchor=(1.0, 1.13))
+    title(fig, "In simulation, Stock Auto drifts;\nthe controller holds tighter.")
     save(fig, "illustrative-chart1-timeline", out)
     return P
 
@@ -184,7 +186,7 @@ def chart2(ctl, P, out):
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%-I:%M %p"))
     ax.set_xlabel("Time")
     ax.legend(loc="upper left", ncol=3)
-    title(fig, "How the controller steers.")
+    title(fig, "How the controller steers (simulated).")
     save(fig, "illustrative-chart2-steering", out)
     return (t0, t1)
 

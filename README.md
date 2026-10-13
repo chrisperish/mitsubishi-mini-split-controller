@@ -1,12 +1,12 @@
 # Mitsubishi Mini-Split Controller
 
-**A small controller that tries to make a Mitsubishi mini-split hold one steady temperature.**
+**A small controller that tries to make a Mitsubishi mini-split hold one steady temperature. In simulation it holds tighter than Stock Auto; real results so far are mixed.**
 
-![Illustrative simulation: Stock Auto overshoots and flips between heating and cooling, the controller holds the room in the comfort band](docs/charts/illustrative-chart1-timeline.png)
+![Simulated, not measured: Stock Auto sits near 67°F overnight and flips to cooling in afternoon sun, while the controller holds closer to the comfort band](docs/charts/illustrative-chart1-timeline.png)
 
 ## The problem
 
-Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint and switches between heating and cooling as the room crosses them. In a small, well-insulated room that switching feeds on itself. Heating keeps running past the heat setpoint until the room crosses the cool side, so the unit flips to cooling. Cooling then carries the room below the heat setpoint, and it flips back to heating. The result is a room that swings across the whole comfort band, and a unit that can end up cooling on a cold night. Chart 1 shows this pattern in a simulation: Stock Auto on top, this controller below.
+Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint (67 and 73°F by default here) and only changes mode when the room crosses the other one. Everything between the two setpoints is left alone, so the room can sit anywhere in a 6°F range. In the simulation in Chart 1, Stock Auto parks the room near its 67°F heat setpoint all night, below a 69 to 71°F comfort band, and then lets afternoon sun carry it past 73°F before it switches to cooling. In the same simulation, the controller steers the heat setpoint from a short-term prediction and keeps the room nearer 70°F, cooling only after sun pushes the room to 73°F.
 
 ## How it works
 
@@ -38,15 +38,17 @@ flowchart TD
 
 T is the wireless sensor reading if it is at most 20 minutes old, else the unit's own reading. g is the number of minutes since the last good reading; after a gap longer than 30 minutes the controller still follows T but skips the slope, regime switches and trim.
 
-![Illustrative simulation: a 2.5 hour zoom of room temperature, predicted temperature and the stepped heat setpoint](docs/charts/illustrative-chart2-steering.png)
+![Simulated, not measured: a 2.5 hour zoom of room temperature, predicted temperature and the stepped heat setpoint](docs/charts/illustrative-chart2-steering.png)
 
 ## What to expect
 
-![Illustrative simulation: share of time below, inside and above 69 to 71°F for Stock Auto and the controller](docs/charts/illustrative-chart3-time-in-band.png)
+![Simulated, not measured: share of time below, inside and above 69 to 71°F for Stock Auto and the controller](docs/charts/illustrative-chart3-time-in-band.png)
 
 Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate.
 
-The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature curve twice: once with Stock Auto at 68/72°F, and once with this controller's real decision code. It is seeded, so `python scripts/make_charts.py` redraws identical charts every time.
+The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 67/73°F and its own changeover, and once driven by this controller's real decision code. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
+
+In the author's own trial, real logs showed that v2 (this controller) has not yet beaten v1 (an earlier heat/cool switching version) on time in band (roughly 44% vs 71%), and that strong afternoon sun pushed the room above the band.
 
 ## Setup
 
