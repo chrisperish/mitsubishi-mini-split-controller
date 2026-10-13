@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Regenerate the README charts (PNG 1600x900 and SVG) and the README stats tables from data/log.csv.
+"""Draw the README charts.
 
-    python scripts/make_charts.py            # charts into docs/charts/, tables into README.md
+    python scripts/make_charts.py                     # illustrative charts -> docs/charts/illustrative-*.{png,svg}
+    python scripts/make_charts.py --from-log var/log.csv [--out charts]   # chart your own controller log
 
-Nothing here is hardcoded: every number, range and time label is computed by scripts/stats.py.
-Points are joined only across gaps of 30 minutes or less; there is no interpolation.
+The README charts come from a deterministic simulation (scripts/simulate.py, seed 42). They show how
+the two approaches behave; they are not measured data. --from-log charts a real log.csv written by
+the controller instead; nothing from your log is committed.
 """
 from __future__ import annotations
 
+import argparse
+import csv
 import re
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import matplotlib
@@ -18,347 +22,286 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import stats  # noqa: E402
+import simulate  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "charts"
-README = ROOT / "README.md"
-PT = stats.PT
+ILLUSTRATIVE = "Illustrative simulation, not measured data."
 
-# ---- design tokens
+# ---- design tokens (unchanged palette)
 BG, GRID, AXIS = "#FAFAF9", "#E7E5E4", "#57534E"
 ROOM, BAND_C, HEAT, COOL = "#1C1917", "#10B981", "#F97316", "#3B82F6"
 HEAT_SP, COOL_SP, OUTDOOR = "#EA580C", "#2563EB", "#A8A29E"
+FIG, DPI = (8, 4.5), 200      # 1600 x 900 px
 GAP = timedelta(minutes=30)
-FIG = (8, 4.5)   # inches; at 200 dpi (2x) -> 1600 x 900 px
-DPI = 200
 
 plt.rcParams.update({
-    "font.family": "sans-serif",
     # DejaVu Sans ships inside matplotlib, so every machine renders the same glyphs.
-    "font.sans-serif": ["DejaVu Sans"], "font.weight": "normal",
-    "font.size": 12, "axes.labelsize": 12, "xtick.labelsize": 12, "ytick.labelsize": 12,
-    "axes.titlesize": 16, "axes.titleweight": "bold", "axes.titlelocation": "left",
+    "font.family": "sans-serif", "font.sans-serif": ["DejaVu Sans"], "font.weight": "normal",
+    "font.size": 12, "axes.labelsize": 12, "xtick.labelsize": 11, "ytick.labelsize": 11,
     "figure.facecolor": BG, "axes.facecolor": BG, "savefig.facecolor": BG,
     "axes.edgecolor": GRID, "axes.labelcolor": AXIS, "xtick.color": AXIS, "ytick.color": AXIS,
     "text.color": AXIS, "axes.grid": True, "axes.grid.axis": "y", "grid.color": GRID, "grid.linewidth": 0.8,
-    "axes.spines.top": False, "axes.spines.right": False, "legend.frameon": False, "legend.fontsize": 10,
+    "axes.spines.top": False, "axes.spines.right": False, "legend.frameon": False, "legend.fontsize": 9,
     "svg.fonttype": "none", "svg.hashsalt": "minisplit-controller",
 })
 
 
-def f1(x):
-    return f"{x:.1f}"
-
-
-def pct(x):
-    return f"{x * 100:.0f}%"
-
-
-def segments(xs, ys):
-    """Split a series wherever consecutive points are more than 30 min apart."""
-    seg_x, seg_y = [], []
-    for x, y in zip(xs, ys):
-        if seg_x and x - seg_x[-1] > GAP:
-            yield seg_x, seg_y
-            seg_x, seg_y = [], []
-        seg_x.append(x)
-        seg_y.append(y)
-    if seg_x:
-        yield seg_x, seg_y
-
-
-def plot_gapped(ax, xs, ys, **kw):
-    first = True
-    for sx, sy in segments(xs, ys):
-        ax.plot(sx, sy, label=kw.pop("label", None) if first else None, **kw)
-        first = False
-
-
-def step_gapped(ax, xs, ys, **kw):
-    first = True
-    for sx, sy in segments(xs, ys):
-        ax.step(sx, sy, where="post", label=kw.pop("label", None) if first else None, **kw)
-        first = False
-
-
-def mode_spans(ax, rs, end):
-    """Shade heat and cool periods (each reading's mode holds until the next reading)."""
-    for a, b in zip(rs, rs[1:] + [None]):
-        stop = b.ts if b else end
-        if a.mode in ("heat", "cool"):
-            ax.axvspan(a.ts, stop, color=HEAT if a.mode == "heat" else COOL, alpha=0.10, lw=0, zorder=0)
+# ------------------------------------------------------------------ helpers
+def title(fig, text, sub=ILLUSTRATIVE, x=0.08):
+    fig.text(x, 0.965, text, fontsize=16, fontweight="bold", color=ROOM, ha="left", va="top")
+    if sub:
+        fig.text(x, 0.895, sub, fontsize=11, color=AXIS, ha="left", va="top")
+        fig.text(0.99, 0.012, sub, fontsize=7, color=OUTDOOR, ha="right", va="bottom")
 
 
 def band(ax):
-    ax.axhspan(*stats.BAND, color=BAND_C, alpha=0.12, lw=0, zorder=0.5)
-    for y in stats.BAND:
+    ax.axhspan(*simulate.BAND, color=BAND_C, alpha=0.12, lw=0, zorder=0.5)
+    for y in simulate.BAND:
         ax.axhline(y, color=BAND_C, lw=0.9, ls=(0, (4, 3)), zorder=0.6)
 
 
-def time_axis(ax):
-    ax.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, 3), tz=PT))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%-I %p", tz=PT))
-    ax.set_xlabel(f"Time ({stats.TZ_LABEL})")
+def spans(t, mode):
+    """[(start, end, mode)] runs of a constant mode."""
+    out, s = [], 0
+    for i in range(1, len(t) + 1):
+        if i == len(t) or mode[i] != mode[s]:
+            out.append((t[s], t[min(i, len(t) - 1)], mode[s]))
+            s = i
+    return out
 
 
-def callout(ax, text, xy, xytext, **kw):
-    ax.annotate(text, xy=xy, xytext=xytext, fontsize=10, color=ROOM, ha=kw.pop("ha", "left"),
-                arrowprops=dict(arrowstyle="-", color=AXIS, lw=0.6, shrinkA=2, shrinkB=2), **kw)
+def shade(ax, t, mode, label_y=None):
+    for a, b, m in spans(t, mode):
+        if m not in ("heat", "cool"):
+            continue
+        ax.axvspan(a, b, color=HEAT if m == "heat" else COOL, alpha=0.10, lw=0, zorder=0)
+        if label_y is not None and (b - a) >= timedelta(minutes=50):
+            ax.text(a + (b - a) / 2, label_y, "Heating" if m == "heat" else "Cooling", fontsize=8.5,
+                    ha="center", va="center", color=HEAT_SP if m == "heat" else COOL_SP)
 
 
-def deploy_line(ax, split, label=True):
-    ax.axvline(split, color=AXIS, lw=1, zorder=3)
-    if label:
-        ax.text(split, 0.985, f" v2 deployed {stats.clock(split)}", transform=ax.get_xaxis_transform(),
-                fontsize=10, color=AXIS, va="top", ha="left")
+def time_axis(ax, every=3):
+    ax.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, every)))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%-I %p"))
 
 
-def save(fig, name):
-    OUT.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUT / f"{name}.png", dpi=DPI, metadata={"Software": None})
-    fig.savefig(OUT / f"{name}.svg", metadata={"Date": None, "Creator": None})
+def callout(ax, text, xy, xytext, ha="left"):
+    ax.annotate(text, xy=xy, xytext=xytext, fontsize=9.5, color=ROOM, ha=ha, va="center",
+                arrowprops=dict(arrowstyle="-", color=AXIS, lw=0.6, shrinkA=2, shrinkB=2))
+
+
+def plot_gapped(ax, xs, ys, **kw):
+    """Join points only across gaps of 30 min or less (used for real logs)."""
+    seg_x, seg_y, first = [], [], True
+    for x, y in list(zip(xs, ys)) + [(None, None)]:
+        if x is None or (seg_x and x - seg_x[-1] > GAP):
+            ax.plot(seg_x, seg_y, label=kw.pop("label", None) if first else None, **kw)
+            seg_x, seg_y, first = [], [], False
+        if x is not None:
+            seg_x.append(x)
+            seg_y.append(y)
+
+
+def save(fig, name, out):
+    out.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out / f"{name}.png", dpi=DPI, metadata={"Software": None})
+    fig.savefig(out / f"{name}.svg", metadata={"Date": None, "Creator": None})
     plt.close(fig)
 
 
-# ------------------------------------------------------------------ chart 1
-def chart1(S):
-    rs, split = S["readings"], S["split"]
-    v1n, v2 = S["v1_night"], S["v2"]
-    end = rs[-1].ts
-    steady = S["v2_steady"]
-    lo, hi = min(r.room for r in steady), max(r.room for r in steady)
-    fig, ax = plt.subplots(figsize=FIG)
-    fig.subplots_adjust(left=0.08, right=0.91, top=0.74, bottom=0.13)
-    mode_spans(ax, rs, end)
-    band(ax)
-    xs, ys = [r.ts for r in rs], [r.room for r in rs]
-    plot_gapped(ax, xs, ys, color=ROOM, lw=2, label="Room temp", zorder=4)
-    ax.scatter(xs, ys, s=4, color=ROOM, zorder=5)
-    deploy_line(ax, split)
-    ax.set_ylabel("Room temp (°F)")
-    ax.set_ylim(66.5, 75.5)
-    time_axis(ax)
-
-    ax2 = ax.twinx()
-    od = [(r.ts, r.outdoor) for r in rs if r.outdoor is not None]
-    plot_gapped(ax2, [a for a, _ in od], [b for _, b in od], color=OUTDOOR, lw=1.5, ls=":", label="Outdoor")
-    ax2.set_ylabel("Outdoor (°F)", color=OUTDOOR)
-    ax2.tick_params(axis="y", colors=OUTDOOR)
-    ax2.grid(False)
-    ax2.spines["right"].set_visible(True)
-    ax2.spines["right"].set_color(GRID)
-    ax2.set_ylim(20, 80)
-
-    peak, trough = S["overshoot"]
-    callout(ax, f"Overshoot: {f1(peak.room)}°F, then down to {f1(trough.room)}°F",
-            (peak.ts, peak.room), (rs[0].ts, 74.6))
-    flip_ts = [b.ts for a, b in zip(rs, rs[1:]) if v1n["start"] <= b.ts < split
-               and {a.mode, b.mode} == {"heat", "cool"}]
-    mid = flip_ts[len(flip_ts) // 2]
-    callout(ax, f"{v1n['flips']} heat/cool flips overnight,\n{f1(v1n['cool_h'])} h of cooling",
-            (mid, 70.0), (mid - timedelta(hours=3.2), 67.2))
-    callout(ax, f"v2 heat regime: {f1(lo)} to {f1(hi)}°F\n({stats.clock(steady[0].ts)} to {stats.clock(steady[-1].ts)})",
-            (steady[len(steady) // 2].ts, hi), (split + timedelta(hours=1.5), 67.4))
-    seg = S["cool_seg"]
-
-    handles = [plt.Line2D([], [], color=ROOM, lw=2, label="Room temp"),
-               Patch(color=BAND_C, alpha=0.3, label="Comfort band 69 to 71°F"),
-               Patch(color=HEAT, alpha=0.25, label="Heat mode"), Patch(color=COOL, alpha=0.25, label=f"Cool mode (v2 after {stats.clock(seg[0].ts)}: solar gain)"),
-               plt.Line2D([], [], color=OUTDOOR, lw=1.5, ls=":", label="Outdoor (logged by v2 only)")]
-    ax.legend(handles=handles, ncol=3, loc="lower left", bbox_to_anchor=(0, 1.0), fontsize=8.5,
-              handlelength=1.4, columnspacing=1.0)
-    v1 = S["v1"]
-    fig.suptitle(f"v1 flipped heat and cool {v1n['flips']} times in one night.\n"
-                 f"v2 stays in heat until afternoon sun forces cool.",
-                 x=0.08, ha="left", fontsize=16, fontweight="bold",
-                 color=ROOM, y=0.97)
-    save(fig, "chart1-timeline")
-    return {"steady": (lo, hi), "flip_count": len(flip_ts)}
+# ------------------------------------------------------------------ illustrative charts
+def find_points(auto, ctl):
+    """Locate callout anchors in the simulated series (no hardcoded times)."""
+    flips = [i for i in range(1, len(auto.t)) if auto.mode[i] != auto.mode[i - 1]]
+    first_cool = next(i for i in flips if auto.mode[i] == "cool")
+    peak = max(range(first_cool), key=lambda i: auto.room[i])
+    cold = [i for i in range(len(auto.t)) if auto.mode[i] == "cool" and auto.outdoor[i] < 50]
+    cold_mid = cold[len(cold) // 2]
+    drops = [i for i in range(1, len(ctl.t)) if ctl.heat_sp[i] < ctl.heat_sp[i - 1]
+             and ctl.tp[i] is not None and ctl.tp[i] > ctl.room[i]]
+    drop = max(drops, key=lambda i: ctl.tp[i] - ctl.room[i])
+    return {"peak": peak, "first_cool": first_cool, "cold_mid": cold_mid, "drop": drop, "drops": drops}
 
 
-# ------------------------------------------------------------------ chart 2
-def chart2(S):
-    rs, split, events = S["readings"], S["split"], S["events"]
-    v2 = [r for r in rs if r.ts >= split]
-    fig, (top, bot) = plt.subplots(2, 1, figsize=FIG, sharex=True, gridspec_kw={"height_ratios": [3, 2]})
-    fig.subplots_adjust(left=0.09, right=0.97, top=0.78, bottom=0.14, hspace=0.12)
-    end = v2[-1].ts
-    for ax in (top, bot):
-        mode_spans(ax, v2, end)
-    band(top)
-    plot_gapped(top, [r.ts for r in v2], [r.room for r in v2], color=ROOM, lw=2, label="Room temp", zorder=4)
-    tp = [(r.ts, r.tp) for r in v2 if r.tp is not None]
-    plot_gapped(top, [a for a, _ in tp], [b for _, b in tp], color=ROOM, lw=0.9, ls=(0, (4, 2)),
-                label="Predicted temp Tp (15 min ahead)", zorder=3)
-    top.set_ylabel("°F")
-    top.legend(loc="upper left", ncol=2, fontsize=9)
-    top.set_ylim(69, 75.5)
-
-    heat = [(r.ts, r.heat_sp) for r in v2 if r.mode == "heat" and r.heat_sp is not None]
-    cool = [(r.ts, r.cool_sp) for r in v2 if r.mode == "cool" and r.cool_sp is not None]
-    step_gapped(bot, [a for a, _ in heat], [b for _, b in heat], color=HEAT_SP, lw=2, label="Heat setpoint")
-    step_gapped(bot, [a for a, _ in cool], [b for _, b in cool], color=COOL_SP, lw=2, label="Cool setpoint")
-    trims = []
-    for e in events:
-        m = re.search(r"trim change: ([+-]\d) -> ([+-]\d)", e["action"])
-        if m:
-            ts = stats.parse_ts(e["timestamp_pt"])
-            d = int(m.group(2)) - int(m.group(1))
-            trims.append((ts, d))
-            bot.axvline(ts, ymin=0, ymax=0.12, color=AXIS, lw=1.2)
-            bot.text(ts, 64.9, f" trim {d:+d}", fontsize=9, color=AXIS, va="bottom")
-    bot.set_ylim(64.5, 78.5)
-    bot.set_ylabel("Setpoint °F")
-    bot.legend(loc="upper left", ncol=2, fontsize=9)
+def chart1(auto, ctl, out):
+    P = find_points(auto, ctl)
+    fig, (top, bot) = plt.subplots(2, 1, figsize=FIG, sharex=True, sharey=True)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.74, bottom=0.11, hspace=0.28)
+    for ax, r, name in ((top, auto, "Stock Auto"), (bot, ctl, "Controller")):
+        shade(ax, r.t, r.mode, label_y=74.2)
+        band(ax)
+        ax.plot(r.t, r.room, color=ROOM, lw=2, zorder=4)
+        ax.set_ylim(64, 75)
+        ax.set_yticks([65, 67, 69, 71, 73, 75])
+        ax.set_title(name, loc="left", fontsize=10.5, fontweight="bold", color=ROOM, pad=3)
+    top.step(auto.t, auto.heat_sp, where="post", color=HEAT_SP, lw=1)
+    top.step(auto.t, auto.cool_sp, where="post", color=COOL_SP, lw=1)
+    bot.step(ctl.t, ctl.heat_sp, where="post", color=HEAT_SP, lw=1.6)
+    i = P["peak"]
+    callout(top, "Overshoot", (auto.t[i], auto.room[i]), (auto.t[i] - timedelta(hours=4.2), 73.2))
+    i = P["first_cool"]
+    callout(top, "Flips to cooling", (auto.t[i], auto.room[i]), (auto.t[i] + timedelta(hours=2.0), 72.8))
+    i = P["cold_mid"]
+    callout(top, "Cooling on a cold night", (auto.t[i], auto.room[i]), (auto.t[i] + timedelta(hours=2.5), 65.6))
+    i = P["drop"]
+    callout(bot, "Setpoint steps down before the room overshoots", (ctl.t[i], ctl.heat_sp[i]),
+            (ctl.t[i] - timedelta(hours=9), 65.2))
     time_axis(bot)
-    bot.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, 2), tz=PT))
-
-    # Callout: the first setpoint cut made while the room was still in band but predicted to rise.
-    drop = None
-    for a, b in zip(v2, v2[1:]):
-        if a.mode == b.mode == "heat" and a.heat_sp and b.heat_sp and b.heat_sp < a.heat_sp \
-                and b.room <= stats.BAND[1] and b.tp is not None and b.tp > b.room:
-            drop = b
-            break
-    if drop:
-        callout(bot, "Setpoint drops before the room overshoots.", (drop.ts, drop.heat_sp),
-                (drop.ts + timedelta(hours=1.0), 69.5))
-    lo_tp = min(b for _, b in tp)
-    fig.suptitle("v2 steers the heat setpoint from predicted temp,\nnot current temp",
-                 x=0.09, ha="left", fontsize=16, fontweight="bold", color=ROOM, y=0.97)
-    save(fig, "chart2-setpoint-steering")
-    return {"drop": drop, "trims": trims, "tp_min": lo_tp}
+    bot.set_xlabel("Time")
+    fig.text(0.015, 0.43, "Room temp (°F)", rotation=90, va="center", fontsize=12, color=AXIS)
+    handles = [Line2D([], [], color=ROOM, lw=2, label="Room temp"),
+               Line2D([], [], color=HEAT_SP, lw=1.4, label="Setpoint"),
+               Patch(color=HEAT, alpha=0.25, label="Heating"), Patch(color=COOL, alpha=0.25, label="Cooling")]
+    top.legend(handles=handles, ncol=4, loc="lower right", bbox_to_anchor=(1.0, 1.0))
+    title(fig, "Stock Auto drifts. The controller holds.")
+    save(fig, "illustrative-chart1-timeline", out)
+    return P
 
 
-# ------------------------------------------------------------------ chart 3
-def chart3(S):
-    v1, v2 = S["v1"], S["v2"]
-    fig, (ax, axc) = plt.subplots(2, 1, figsize=FIG, gridspec_kw={"height_ratios": [2.2, 1.3]})
-    fig.subplots_adjust(left=0.20, right=0.96, top=0.78, bottom=0.06, hspace=0.75)
-    labels = [f"v1 ({f1(v1['hours'])} h)", f"v2 ({f1(v2['hours'])} h)"]
-    rows = [v1, v2]
+def chart2(ctl, P, out):
+    i = P["drop"]
+    t0, t1 = ctl.t[i] - timedelta(hours=1.25), ctl.t[i] + timedelta(hours=1.25)
+    idx = [k for k in range(len(ctl.t)) if t0 <= ctl.t[k] <= t1]
+    t = [ctl.t[k] for k in idx]
+    fig, ax = plt.subplots(figsize=FIG)
+    fig.subplots_adjust(left=0.09, right=0.94, top=0.76, bottom=0.13)
+    band(ax)
+    ax.set_xlim(t0, t1)
+    ax.plot(t, [ctl.room[k] for k in idx], color=ROOM, lw=2, label="Room temp", zorder=4)
+    ax.plot(t, [ctl.tp[k] for k in idx], color=ROOM, lw=0.9, ls=(0, (4, 2)),
+            label="Predicted temp, 15 min ahead", zorder=3)
+    ax.step(t, [ctl.heat_sp[k] for k in idx], where="post", color=HEAT_SP, lw=2, label="Heat setpoint")
+    ax.set_ylim(64, 73)
+    ax.set_ylabel("°F")
+    callout(ax, "Predicted to rise, so setpoint drops 1F", (ctl.t[i], ctl.heat_sp[i]),
+            (ctl.t[i] + timedelta(minutes=15), 65.0))
+    ax.xaxis.set_major_locator(mdates.MinuteLocator(byminute=[0, 30]))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%-I:%M %p"))
+    ax.set_xlabel("Time")
+    ax.legend(loc="upper left", ncol=3)
+    title(fig, "How the controller steers.")
+    save(fig, "illustrative-chart2-steering", out)
+    return (t0, t1)
+
+
+def bars(ax, rows):
     cols = [("below", "Below 69°F", "#93C5FD"), ("in_band", "69 to 71°F", BAND_C), ("above", "Above 71°F", "#FDBA74")]
-    for i, d in enumerate(rows):
+    for i, (_, d) in enumerate(rows):
         left = 0
         for key, lab, c in cols:
             w = d[key] * 100
-            ax.barh(i, w, left=left, color=c, height=0.6, label=lab if i == 0 else None)
-            if key == "in_band":
-                ax.text(left + w / 2, i, pct(d[key]), ha="center", va="center", fontsize=20,
+            ax.barh(i, w, left=left, color=c, height=0.55, label=lab if i == 0 else None)
+            if key == "in_band" and w >= 8:
+                ax.text(left + w / 2, i, f"{w:.0f}%", ha="center", va="center", fontsize=20,
                         fontweight="bold", color="white")
-            elif w >= 6:
-                ax.text(left + w / 2, i, pct(d[key]), ha="center", va="center", fontsize=10, color=ROOM)
+            elif w >= 7:
+                ax.text(left + w / 2, i, f"{w:.0f}%", ha="center", va="center", fontsize=10, color=ROOM)
             left += w
-    ax.set_yticks([0, 1], labels)
+    ax.set_yticks(range(len(rows)), [n for n, _ in rows])
     ax.invert_yaxis()
     ax.set_xlim(0, 100)
-    ax.grid(False)
     ax.set_xticks([])
+    ax.grid(False)
     ax.legend(ncol=3, loc="lower left", bbox_to_anchor=(0, 1.0), fontsize=10)
-    ax.text(0, 1.32, "Share of time by room temp", transform=ax.transAxes, fontsize=12, color=AXIS)
-    for i, d in enumerate(rows):
-        h = d["cool_share"] * 100
-        axc.barh(i, h, color=COOL, alpha=0.85, height=0.6, label="Cool mode" if i == 0 else None)
-        axc.barh(i, 100 - h, left=h, color=HEAT, alpha=0.6, height=0.6, label="Heat mode" if i == 0 else None)
-        axc.text(h / 2 if h >= 8 else h + 1, i, f"cool {pct(d['cool_share'])}", va="center",
-                 ha="center" if h >= 8 else "left", fontsize=10, color="white" if h >= 8 else ROOM)
-    axc.set_yticks([0, 1], labels)
-    axc.invert_yaxis()
-    axc.set_xlim(0, 100)
-    axc.grid(False)
-    axc.set_xticks([])
-    axc.legend(ncol=2, loc="lower left", bbox_to_anchor=(0, 1.0), fontsize=10)
-    axc.text(0, 1.55, "Share of time by mode", transform=axc.transAxes, fontsize=12, color=AXIS)
-    seg = S["cool_seg"]
-    fig.suptitle(f"v1 spent {pct(v1['cool_share'])} of its time cooling; v2 {pct(v2['cool_share'])}, "
-                 f"all after {stats.clock(seg[0].ts)}", x=0.03, ha="left", fontsize=16, fontweight="bold",
-                 color=ROOM, y=0.97)
-    save(fig, "chart3-time-in-band")
 
 
-# ------------------------------------------------------------------ README tables
-def tables(S, c1):
-    v1, n, v2 = S["v1"], S["v1_night"], S["v2"]
-    peak, trough = S["overshoot"]
-    fo = S["first_outdoor"]
-    problem = "\n".join([
-        f"| v1 night ({stats.clock(n['start'])} to {stats.clock(n['end'])}, {f1(n['hours'])} h) | From log.csv |",
-        "|---|---|",
-        f"| Heat/cool mode flips in one night | {n['flips']} |",
-        f"| Time in 69 to 71°F | {pct(n['in_band'])} |",
-        f"| Cooling hours that night | {f1(n['cool_h'])} h |",
-    ])
-    problem_note = (f"Peak {f1(peak.room)}°F at {stats.clock(peak.ts)}, then down to {f1(trough.room)}°F at "
-                    f"{stats.clock(trough.ts)} before heat came back on. The night low was {f1(n['min'])}°F. "
-                    f"Outdoor temperature was not logged during v1; the first logged reading, at "
-                    f"{stats.clock(fo.ts)} the next morning, was {f1(fo.outdoor)}°F.")
-    lo, hi = c1["steady"]
-    results = "\n".join([
-        "| Metric | v1 | v2 |",
-        "|---|---|---|",
-        f"| Period | {v1['start']:%b %-d} {stats.clock(v1['start'])} to {stats.clock(v1['end'])} "
-        f"({f1(v1['hours'])} h) | {stats.clock(v2['start'])} to {stats.clock(S['readings'][-1].ts)} "
-        f"({f1(v2['hours'])} h) |",
-        f"| Time in 69 to 71°F | {pct(v1['in_band'])} | {pct(v2['in_band'])} |",
-        f"| Heat/cool mode flips | {v1['flips']} | {v2['flips']} |",
-        f"| Cooling hours | {f1(v1['cool_h'])} h | {f1(v2['cool_h'])} h |",
-        f"| Min room temp | {f1(v1['min'])}°F | {f1(v2['min'])}°F |",
-        f"| Max room temp | {f1(v1['max'])}°F | {f1(v2['max'])}°F |",
-    ])
-    seg = S["cool_seg"]
-    results_note = (f"v2 held {f1(lo)} to {f1(hi)}°F in heat from {stats.clock(S['v2_steady'][0].ts)} to "
-                    f"{stats.clock(S['v2_steady'][-1].ts)}. Its full range was {f1(v2['min'])} to "
-                    f"{f1(v2['max'])}°F: from midday, solar gain pushed the room above the band "
-                    f"with the heat setpoint already at its floor, and the 73°F rule switched to cool at "
-                    f"{stats.clock(seg[0].ts)} ({f1(seg[0].room)}°F); the last reading was "
-                    f"{f1(seg[-1].room)}°F at {stats.clock(seg[-1].ts)}. v2 has no overnight data yet, so "
-                    f"the two columns cover different times of day.")
-    a = S["afternoon"]
-    a1, a2 = a["v1"], a["v2"]
-    w1, w2 = a["window1"], a["window2"]
-    verdict = ("v2 has not yet beaten v1 on time in band." if v2["in_band"] <= v1["in_band"]
-               else "v2 spent more of its time in band than v1.")
-    afternoon_txt = "\n".join([
-        f"**{verdict}** The two runs cover different hours, so the one time of day both cover, the afternoon, "
-        f"is the fairest comparison, and it favours {'v1' if a1['in_band'] >= a2['in_band'] else 'v2'}:",
-        "",
-        "| Afternoon | Window | In 69 to 71°F | Above 71°F |",
-        "|---|---|---|---|",
-        f"| v1 | {w1[0]:%b %-d} {stats.clock(w1[0])} to {stats.clock(w1[1])} | {pct(a1['in_band'])} | {pct(a1['above'])} |",
-        f"| v2 | {w2[0]:%b %-d} {stats.clock(w2[0])} to {stats.clock(w2[1])} | {pct(a2['in_band'])} | {pct(a2['above'])} |",
-        "",
-        f"Both rows use the same clock window: {stats.clock(w1[0])}, when the log starts, to "
-        f"{stats.clock(w2[1])}, the last v2 reading.",
-    ])
-    return {"problem": problem + "\n\n" + problem_note,
-            "results": results + "\n\n" + results_note + "\n\n" + afternoon_txt}
+def chart3(sa, sc, out):
+    fig, ax = plt.subplots(figsize=FIG)
+    fig.subplots_adjust(left=0.20, right=0.96, top=0.70, bottom=0.12)
+    bars(ax, [("Stock Auto", sa), ("Controller", sc)])
+    title(fig, "Time in the comfort band (illustrative)", x=0.03)
+    save(fig, "illustrative-chart3-time-in-band", out)
 
 
-def update_readme(blocks):
-    if not README.exists():
+def illustrative(out=OUT):
+    auto, ctl = simulate.stock_auto(), simulate.controller()
+    sa, sc = simulate.summarize(auto), simulate.summarize(ctl)
+    P = chart1(auto, ctl, out)
+    win = chart2(ctl, P, out)
+    chart3(sa, sc, out)
+    return {"auto": sa, "controller": sc, "points": P, "zoom": win, "auto_run": auto, "ctl_run": ctl}
+
+
+# ------------------------------------------------------------------ your own log
+def load_log(path):
+    """Readings from a controller log.csv: (time, room, mode, heat_sp, cool_sp, Tp)."""
+    rows = {}
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            if r.get("event") == "Error" or not r.get("room_f"):
+                continue
+            m = re.match(r"\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M)", r["timestamp_pt"])
+            if not m:
+                continue
+            ts = datetime.strptime(m.group(1), "%Y-%m-%d %I:%M %p")
+            tp = re.search(r"\bTp (\d+\.\d+)", r.get("action", ""))
+            num = lambda x: float(x) if x not in ("", None) else None  # noqa: E731
+            rows[ts] = (ts, float(r["room_f"]), r.get("mode", ""), num(r.get("heat_sp")), num(r.get("cool_sp")),
+                        float(tp.group(1)) if tp else None)
+    return [rows[k] for k in sorted(rows)]
+
+
+def log_shares(rs):
+    """Time-weighted shares: each reading holds until the next one (gaps over 30 min are skipped)."""
+    tot = below = inb = 0.0
+    for a, b in zip(rs, rs[1:]):
+        d = (b[0] - a[0]).total_seconds()
+        if d <= 0 or d > GAP.total_seconds():
+            continue
+        tot += d
+        below += d if a[1] < simulate.BAND[0] else 0
+        inb += d if simulate.BAND[0] <= a[1] <= simulate.BAND[1] else 0
+    tot = tot or 1.0
+    return {"below": below / tot, "in_band": inb / tot, "above": 1 - (below + inb) / tot}
+
+
+def from_log(path, out):
+    rs = load_log(path)
+    if len(rs) < 2:
+        sys.exit(f"{path}: need at least two readings")
+    t = [r[0] for r in rs]
+    fig, ax = plt.subplots(figsize=FIG)
+    fig.subplots_adjust(left=0.09, right=0.97, top=0.80, bottom=0.13)
+    shade(ax, t, [r[2] for r in rs], label_y=None)
+    band(ax)
+    plot_gapped(ax, t, [r[1] for r in rs], color=ROOM, lw=2, label="Room temp")
+    hs = [(r[0], r[3]) for r in rs if r[2] == "heat" and r[3] is not None]
+    if hs:
+        ax.step([a for a, _ in hs], [b for _, b in hs], where="post", color=HEAT_SP, lw=1.2, label="Heat setpoint")
+    ax.set_ylabel("°F")
+    ax.set_xlabel("Time")
+    time_axis(ax, every=3 if (t[-1] - t[0]) <= timedelta(hours=36) else 12)
+    ax.legend(loc="upper left", ncol=2)
+    title(fig, "Room temperature from your log", sub=None, x=0.09)
+    save(fig, "log-timeline", out)
+    fig, ax = plt.subplots(figsize=FIG)
+    fig.subplots_adjust(left=0.20, right=0.96, top=0.74, bottom=0.12)
+    bars(ax, [("Your log", log_shares(rs))])
+    title(fig, "Time in the comfort band (your log)", sub=None, x=0.03)
+    save(fig, "log-time-in-band", out)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--from-log", metavar="PATH", help="chart a controller log.csv instead of the simulation")
+    ap.add_argument("--out", help="output directory (default: docs/charts, or ./charts for --from-log)")
+    a = ap.parse_args(argv)
+    if a.from_log:
+        out = Path(a.out or "charts")
+        from_log(a.from_log, out)
+        print(f"wrote {out}/log-timeline.* and {out}/log-time-in-band.*")
         return
-    text = README.read_text()
-    for name, body in blocks.items():
-        text = re.sub(rf"(<!-- stats:{name} -->).*?(<!-- /stats:{name} -->)",
-                      lambda m: m.group(1) + "\n" + body + "\n" + m.group(2), text, flags=re.S)
-    README.write_text(text)
-
-
-def main():
-    S = stats.compute()
-    c1 = chart1(S)
-    c2 = chart2(S)
-    chart3(S)
-    blocks = tables(S, c1)
-    update_readme(blocks)
-    for b in blocks.values():
-        print(b, "\n")
-    print("v2 deployed:", S["split"], "| first setpoint drop in band:", c2["drop"].ts if c2["drop"] else None,
-          "| trims:", c2["trims"])
+    res = illustrative(Path(a.out) if a.out else OUT)
+    for k in ("auto", "controller"):
+        d = res[k]
+        print(f"{k}: below {d['below']:.0%} in band {d['in_band']:.0%} above {d['above']:.0%} "
+              f"flips {d['flips']} cooling {d['cool_h']:.1f} h (outdoor < 50F: {d['cool_cold_h']:.1f} h) "
+              f"range {d['min']:.1f} to {d['max']:.1f}F")
 
 
 if __name__ == "__main__":
