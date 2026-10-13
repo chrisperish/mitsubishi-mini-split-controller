@@ -1,0 +1,45 @@
+# Copy to config.toml (git-ignored) or point MSC_CONFIG at it.
+# Environment variables override these values. Credentials never go here:
+# set MITSUBISHI_COMFORT_EMAIL and MITSUBISHI_COMFORT_PASSWORD in the environment.
+
+[controller]
+device = ""            # unit serial or name from `python client/mitsubishi.py status` (env: MSC_DEVICE)
+sensor_name = ""       # optional wireless sensor name if it is not linked to the unit (env: MSC_SENSOR_NAME)
+# client_cmd = "python3 client/mitsubishi.py"   # env: MSC_CLIENT_CMD
+# data_dir = "var"                               # state, log.csv, heartbeat (env: MSC_DATA_DIR)
+# latitude = 0.0       # enables the outdoor-temperature gate (env: MSC_LATITUDE)
+# longitude = 0.0      # (env: MSC_LONGITUDE)
+interval_s = 600       # seconds between cycles (env: MSC_INTERVAL_S)
+timezone = "America/Los_Angeles"   # IANA zone for log timestamps (env: MSC_TIMEZONE)
+
+[tuning]               # defaults shown; see README "Tuning"
+target_f = 70.0
+heat_min = 66
+heat_max = 71
+cool_park = 76
+heat_park = 66
+fan = "auto"
+sensor_max_age_min = 20.0
+history_h = 4.0
+gap_max_min = 30.0
+predict_h = 0.25
+slope_limit = 2.0
+regime_min_h = 3.0
+sun_dwell_h = 1.0
+heat_to_cool_f = 73.0
+heat_to_cool_hold_min = 20.0
+sun_override_f = 73.0
+cool_to_heat_f = 68.0
+cool_to_heat_hold_min = 45.0
+outdoor_min_f = 62.0
+outdoor_max_age_h = 2.0
+step_min = 15.0
+trim_every_h = 3.0
+trim_cover_h = 2.5
+trim_deadband_f = 0.4
+trim_min = -1
+trim_max = 2
+heat_table = [[70.6, 66], [70.0, 67], [69.4, 68], [68.8, 69], [68.2, 70]]   # Tp >= x -> heat SP; else heat_max
+cool_table = [[71.4, 78], [72.0, 77], [72.6, 76], [73.2, 75], [73.8, 74]]   # Tp <= x -> cool SP; else cool_floor
+cool_floor = 73
+cool_max = 78
