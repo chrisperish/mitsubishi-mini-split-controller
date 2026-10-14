@@ -12,7 +12,7 @@ Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint and only change
 
 ## How it works
 
-The controller stays in heat and steers the heat setpoint between 66 and 71°F from a predicted room temperature 15 minutes ahead (Tp = current temp + 0.25 h × slope). It lowers the setpoint right away when Tp says the room is heading up, and raises it at most 1°F per 15 minutes. Every 3 hours it compares the time-weighted mean with the 70°F target and trims the whole table by 1°F if the mean drifted more than 0.4°F. It only cools when the room holds at or above 73°F for 20 minutes, which in practice means solar gain.
+The controller stays in heat and steers the heat setpoint between 66 and 71°F from a predicted room temperature 15 minutes ahead (Tp = current temp + 0.25 h × slope). It lowers the setpoint right away when Tp says the room is heading up, and raises it at most 1°F per 15 minutes. Every 3 hours it compares the time-weighted mean with the 70°F target and trims the whole table by 1°F if the mean drifted more than 0.4°F. It only cools when the room holds at or above 73°F for 20 minutes, which in practice means solar gain. With a fresh outdoor reading (at most 2 hours old) that entry point drops to the cool target + 1.5°F when that is lower, and the cool setpoint follows an outdoor-adaptive cool target: 70.5°F when it is 55°F or colder outside, rising linearly to 73.5°F at 80°F or warmer. Without outdoor data it uses the fixed cool table.
 
 It runs every 10 minutes, sends only the settings that differ from the unit's live state, never touches the vane, never turns a switched-off unit back on, and writes one row per cycle to a CSV log.
 
@@ -21,10 +21,11 @@ flowchart TD
     A["Every 10 min"] --> B{"Backoff / read error / offline / off?"}
     B -- yes --> Z["Log, change nothing"]
     B -- no --> C["T, g, slope S, Tp = T + 0.25×S"]
-    C --> D{"g ≤ 30?"}
+    C --> O["Outdoor ≤ 2 h old?<br>yes: cool target 70.5 to 73.5 from outdoor<br>no: no target, h2c = 73"]
+    O --> D{"g ≤ 30?"}
     D -- no --> H
     D -- yes --> E{"Regime?"}
-    E -- heat --> F{"Held ≥ 73 for 20 min (1 h dwell)<br>or outdoor ≥ 62 and room ≥ 73 (3 h dwell)?"}
+    E -- heat --> F{"Held ≥ h2c for 20 min (1 h dwell)<br>or outdoor ≥ 62 and room ≥ h2c (3 h dwell)?<br>h2c = min(73, cool target + 1.5)"}
     E -- cool --> G{"Held ≤ 68 for 45 min (3 h dwell)?"}
     F -- yes --> FC["Switch to cool"]
     G -- yes --> GH["Switch to heat"]
@@ -33,9 +34,12 @@ flowchart TD
     FC --> H
     GH --> H
     H{"Regime"} -- heat --> HH["Heat SP 66 to 71 from Tp table + trim<br>lower now, raise slowly"]
-    H -- cool --> CC["Cool SP 73 to 78 from Tp table<br>first SP straight to table"]
+    H -- cool --> CC{"Cool target?"}
+    CC -- yes --> CA["Cool SP 71 to 78 from Tp minus target<br>never below the outdoor floor (71/72/73)"]
+    CC -- no --> CF["Cool SP 73 to 78 from fixed Tp table"]
     HH --> S["Send only differences, fan auto, log"]
-    CC --> S
+    CA --> S
+    CF --> S
 ```
 
 T is the wireless sensor reading if it is at most 20 minutes old, else the unit's own reading. g is the number of minutes since the last good reading; after a gap longer than 30 minutes the controller still follows T but skips the slope, regime switches and trim.
@@ -48,7 +52,7 @@ T is the wireless sensor reading if it is at most 20 minutes old, else the unit'
 
 Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate.
 
-The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
+The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The simulated controller gets no outdoor reading, so it runs on the fixed cool table and the 73°F entry point, exactly as an install without `MSC_LATITUDE` / `MSC_LONGITUDE` would. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
 
 Overnight the controller toggles its heat setpoint between 69 and 70°F about every 30 minutes, because the predicted temperature sits right on a table threshold. The unit only sees a 1°F nudge each time, so the room stays steady.
 
@@ -84,7 +88,7 @@ python3 client/mitsubishi.py status     # find your unit's serial or name
 | `MITSUBISHI_COMFORT_EMAIL`, `MITSUBISHI_COMFORT_PASSWORD` | yes | Comfort app account; the password also enables automatic re-login when the refresh token expires |
 | `MSC_DEVICE` | yes | Unit serial or name |
 | `MSC_SENSOR_NAME` | no | Wireless sensor name, if the sensor is not linked to the unit |
-| `MSC_LATITUDE`, `MSC_LONGITUDE` | no | Enables the outdoor temperature gate (Open-Meteo, no key needed). Without them the 73°F rule still works |
+| `MSC_LATITUDE`, `MSC_LONGITUDE` | no | Enables the outdoor temperature gate and the outdoor-adaptive cool target (Open-Meteo, no key needed). Without them the 73°F rule and the fixed cool table still work |
 | `MSC_DATA_DIR` | no | Where `state.json`, `log.csv` and the heartbeat live (default `./var`) |
 | `MSC_INTERVAL_S` | no | Seconds between cycles (default 600) |
 | `MSC_TIMEZONE` | no | IANA zone for log timestamps (default `America/Los_Angeles`, labelled `PT`; other zones are labelled with their key, e.g. `UTC`) |
@@ -121,7 +125,7 @@ One row per cycle, plus an extra row for each regime, trim or setpoint change.
 | `heat_sp`, `cool_sp` | Heat and cool setpoints on the unit (°F) |
 | `fan` | Fan speed on the unit |
 | `event` | `Reading` (no change), `Control change`, or `Error` |
-| `action` | What happened. Cycle rows start with `outdoor ...; T ... Tp ... S ...F/h ... g ...m trim ... regime ...` and end with the changes sent |
+| `action` | What happened. Cycle rows start with `outdoor ...; T ... Tp ... S ...F/h ... g ...m trim ... regime ... ctgt ... h2c ...` (ctgt is the cool target, or `table` without fresh outdoor data; h2c is the heat to cool threshold) and end with the changes sent |
 | `room_c` | The unit's own room reading (°C) |
 | `sensor_f` | Wireless sensor reading (°F), if available |
 | `unit_f` | The unit's own room reading (°F) |
@@ -136,13 +140,31 @@ All values live in `[tuning]` in the config file.
 
 **Heat setpoint table** (`heat_table`): Tp ≥ 70.6 → 66, ≥ 70.0 → 67, ≥ 69.4 → 68, ≥ 68.8 → 69, ≥ 68.2 → 70, else 71. Why these values: a mini-split heating in a small room overshoots its setpoint by a degree or more, so the setpoint has to sit below the target whenever the room is near it. Steps of 0.6°F in Tp map to 1°F of setpoint, which is the unit's own resolution, and the 66 to 71 range keeps it from ever blasting heat or shutting off for long.
 
-**Cool setpoint table** (`cool_table`): Tp ≤ 71.4 → 78, ≤ 72.0 → 77, ≤ 72.6 → 76, ≤ 73.2 → 75, ≤ 73.8 → 74, else 73. Why: cooling exists only to take the edge off solar gain, so the setpoint backs off quickly as the room comes down rather than chasing 70°F and swinging the room cold.
+**Outdoor-adaptive cool target** (`cool_target_out_lo_f = 55`, `cool_target_out_hi_f = 80`, `cool_target_lo_f = 70.5`, `cool_target_hi_f = 73.5`, `adaptive_cool = true`): with an outdoor reading at most `outdoor_max_age_h` (2 h) old, the room cool target is linear in outdoor temperature:
+
+| Outdoor °F | ≤ 55 | 60 | 65 | 70 | 75 | ≥ 80 |
+|---|---|---|---|---|---|---|
+| Cool target °F | 70.5 | 71.1 | 71.7 | 72.3 | 72.9 | 73.5 |
+
+Why these values: on a cold day a sunny room cools off quickly once the sun goes, so cooling can aim close to the band without risk; on a hot day the walls and air stay warm, and aiming at 70°F would run the unit hard for little comfort gain. 70.5°F keeps the cold-day target inside the 69 to 71°F band, and 73.5°F on hot days, together with the 73 floor, keeps warm-day cooling about as gentle as the old fixed table.
+
+**Adaptive cool setpoint** (`cool_offsets`, `cool_offsets_else = 71`): Tp = room + 0.25 h × slope, then the first row where Tp ≤ target + offset:
+
+| Tp minus target | ≤ -0.6 | ≤ 0 | ≤ +0.6 | ≤ +1.2 | ≤ +1.8 | ≤ +2.4 | ≤ +3.0 | above |
+|---|---|---|---|---|---|---|---|---|
+| Cool setpoint °F | 78 | 77 | 76 | 75 | 74 | 73 | 72 | 71 |
+
+Why: the same 0.6°F steps per 1°F of setpoint as the other tables (the unit's resolution), shifted so the setpoint is "parked" at 77 to 78 once the room is at or under the target, and only reaches the low 70s when the room is well above it.
+
+**Cool setpoint floor** (`cool_floor_table`, `cool_floor = 73`, `cool_min = 71`): the adaptive setpoint never goes below 71 when it is 60°F or colder outside, 72 when it is 67°F or colder, and 73 otherwise (outdoor ≤ threshold takes that row). Why: on a cold day the room sheds heat fast once the sun fades, so a short push to 71 or 72 trims the solar peak without leaving the room cold for long; on a mild or warm day the same setpoint would keep the unit cooling hard for hours, so warm days stay in the old 73 to 78 range. 67°F (not a round 65) is the boundary the original controller was tuned with.
+
+**Fallback cool table** (`cool_table`): used when the outdoor reading is missing or older than 2 hours (or `adaptive_cool = false`). Tp ≤ 71.4 → 78, ≤ 72.0 → 77, ≤ 72.6 → 76, ≤ 73.2 → 75, ≤ 73.8 → 74, else 73. Why: cooling exists only to take the edge off solar gain, so the setpoint backs off quickly as the room comes down rather than chasing 70°F and swinging the room cold. Without outdoor data the controller cannot tell a cold day from a hot one, so it keeps the conservative 73 floor.
 
 **Rate limits** (`step_min = 15`): the risky direction (raising heat, lowering cool) moves 1°F per 15 minutes; the safe direction moves at once. Why: that is roughly how long the room takes to show the effect of a 1°F change, so faster steps would stack up before they could be measured.
 
 **Trim limits** (`trim_every_h = 3`, `trim_deadband_f = 0.4`, `trim_min = -1`, `trim_max = 2`): every 3 hours, if at least 2.5 hours of readings exist and the mean is more than 0.4°F off target, shift the table by 1°F. Why: 3 hours is long enough to average out a heating cycle, the deadband keeps it from hunting, and the asymmetric limits allow more correction on cold nights (heat loss) than on mild days, where a lower setpoint risks underheating.
 
-**The 73°F solar-gain rule** (`sun_override_f = 73`, `heat_to_cool_hold_min = 20`, `sun_dwell_h = 1`): switch to cool when the room holds at or above 73°F for 20 minutes, at least 1 hour after the last switch, whatever the outdoor temperature. Why this value: with the heat setpoint already at its floor, the only thing that pushes a room past 73°F is solar gain. 73 is 2°F above the band, far enough that heating overshoot alone does not reach it, and the 20-minute hold filters out a single warm reading. Going back to heat needs 68°F held for 45 minutes and a 3-hour dwell, so a short cloud does not cause a flip.
+**The 73°F solar-gain rule** (`sun_override_f = 73`, `heat_to_cool_f = 73`, `heat_to_cool_margin_f = 1.5`, `heat_to_cool_hold_min = 20`, `sun_dwell_h = 1`): switch to cool when the room holds at or above 73°F (or min(73, cool target + 1.5) with fresh outdoor data, so 72.0°F at 55°F or colder outside) for 20 minutes, at least 1 hour after the last switch, whatever the outdoor temperature. Why this value: with the heat setpoint already at its floor, the only thing that pushes a room past 73°F is solar gain. 73 is 2°F above the band, far enough that heating overshoot alone does not reach it, and the 20-minute hold filters out a single warm reading. The +1.5°F margin keeps the entry point 1.5°F above the cool target, so cooling starts only once the room is clearly past where it would settle, and on cold days it starts a little earlier, before the afternoon peak builds. Going back to heat needs 68°F held for 45 minutes and a 3-hour dwell, so a short cloud does not cause a flip.
 
 **Outdoor gate** (`outdoor_min_f = 62`): the other way into cool needs outdoor air at 62°F or warmer and a 3-hour dwell. Why: on a warm day the room can drift up without sun, and requiring warm outdoor air plus the full 3-hour dwell keeps a brief warm spell on a cold day from starting a cooling cycle. 62°F is a starting point; adjust it for your climate.
 
@@ -150,7 +172,7 @@ All values live in `[tuning]` in the config file.
 
 * **Unofficial.** This project is not affiliated with or endorsed by Mitsubishi Electric. It uses the same cloud API as the Mitsubishi Comfort app, which is undocumented and can change or break at any time.
 * **Cloud dependent.** Every reading and command goes through Mitsubishi's servers. If the cloud or your internet is down, the unit simply keeps its last settings. The client backs off when rate limited and re-logs in at most once per 10 minutes.
-* **Conservative by design.** The controller never turns a unit on, never changes the vane, and leaves a switched-off or offline unit alone. Setpoints are clamped to 66 to 71°F for heat and 73 to 78°F for cool by default, and the config loader rejects values outside safe ranges.
+* **Conservative by design.** The controller never turns a unit on, never changes the vane, and leaves a switched-off or offline unit alone. Setpoints are clamped to 66 to 71°F for heat and 73 to 78°F for cool by default (down to 72 or 71°F for cool only when a fresh outdoor reading says it is 67°F or 60°F or colder outside), and the config loader rejects values outside safe ranges.
 * **Simulated charts.** The README charts come from a simulation, not measurements. Your room, unit and climate will differ, so tune and watch the log.
 * **No warranty.** Use at your own risk; see the license.
 

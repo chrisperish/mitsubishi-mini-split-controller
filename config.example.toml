@@ -41,5 +41,16 @@ trim_min = -1
 trim_max = 2
 heat_table = [[70.6, 66], [70.0, 67], [69.4, 68], [68.8, 69], [68.2, 70]]   # Tp >= x -> heat SP; else heat_max
 cool_table = [[71.4, 78], [72.0, 77], [72.6, 76], [73.2, 75], [73.8, 74]]   # Tp <= x -> cool SP; else cool_floor
-cool_floor = 73
+cool_floor = 73        # lowest cool SP on warm days or without outdoor data
+# Outdoor-adaptive cooling: only with an outdoor reading <= outdoor_max_age_h old (needs latitude/longitude)
+adaptive_cool = true
+cool_target_out_lo_f = 55.0   # outdoor at or below this -> cool target cool_target_lo_f
+cool_target_out_hi_f = 80.0   # outdoor at or above this -> cool target cool_target_hi_f (linear between)
+cool_target_lo_f = 70.5
+cool_target_hi_f = 73.5
+cool_offsets = [[-0.6, 78], [0.0, 77], [0.6, 76], [1.2, 75], [1.8, 74], [2.4, 73], [3.0, 72]]   # Tp <= target + x -> cool SP
+cool_offsets_else = 71
+cool_floor_table = [[60.0, 71], [67.0, 72]]   # outdoor <= x -> lowest cool SP; else cool_floor
+cool_min = 71
+heat_to_cool_margin_f = 1.5   # heat -> cool entry = min(heat_to_cool_f, cool target + this)
 cool_max = 78

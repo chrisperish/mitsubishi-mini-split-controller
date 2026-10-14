@@ -4,8 +4,11 @@ The controller keeps the unit in one of two regimes and never uses the unit's ow
 
 * heat (default): the heat setpoint (66-71F) is picked from the predicted room temperature
   Tp = T + 0.25 h * slope, plus a slow trim. The cool setpoint is parked out of the way.
-* cool: only when the room holds >= 73F (solar gain, for example). The cool setpoint
-  (73-78F) is picked from Tp; the heat setpoint is parked at its minimum.
+* cool: only when the room holds >= min(73F, cool target + 1.5F) for 20 minutes (solar gain, for
+  example). The cool setpoint (71-78F) is picked from Tp minus an outdoor-adaptive cool target
+  (70.5F when it is 55F or colder outside, rising linearly to 73.5F at 80F or warmer), never below
+  an outdoor-dependent floor. Without a fresh outdoor reading the fixed cool table (73-78F) is used.
+  The heat setpoint is parked at its minimum.
 
 Timestamps are Unix seconds. Temperatures are Fahrenheit.
 """
@@ -93,12 +96,55 @@ def heat_base(tp, t: Tuning) -> int:
     return t.heat_max
 
 
-def cool_target(tp, t: Tuning) -> int:
-    """Cool setpoint from the table: the cooler the predicted room, the higher the setpoint."""
-    for x, sp in t.cool_table:
-        if tp <= x:
-            return sp
+def outdoor_fresh(s, now_ts, t: Tuning):
+    """Outdoor temperature (F) if present and at most outdoor_max_age_h old, else None."""
+    f, ts = s.get("outdoor_f"), s.get("outdoor_ts")
+    if f is None or ts is None or now_ts - ts > t.outdoor_max_age_h * 3600:
+        return None
+    return float(f)
+
+
+def adaptive_target(out_f, t: Tuning):
+    """Room cool target from outdoor temp, linear between the two anchor points; None without data."""
+    if out_f is None or not t.adaptive_cool:
+        return None
+    x = clamp((out_f - t.cool_target_out_lo_f) / (t.cool_target_out_hi_f - t.cool_target_out_lo_f), 0.0, 1.0)
+    return round(t.cool_target_lo_f + x * (t.cool_target_hi_f - t.cool_target_lo_f), 2)
+
+
+def cool_floor(out_f, t: Tuning) -> int:
+    """Lowest cool setpoint allowed for this outdoor temp: first row with outdoor <= x, else cool_floor."""
+    if out_f is not None and t.adaptive_cool:
+        for x, sp in t.cool_floor_table:
+            if out_f <= x:
+                return sp
     return t.cool_floor
+
+
+def heat_to_cool_f(out_f, t: Tuning) -> float:
+    """Heat -> cool entry threshold: min(heat_to_cool_f, target + margin), or heat_to_cool_f without data."""
+    tgt = adaptive_target(out_f, t)
+    return t.heat_to_cool_f if tgt is None else round(min(t.heat_to_cool_f, tgt + t.heat_to_cool_margin_f), 2)
+
+
+def cool_target(tp, t: Tuning, out_f=None) -> int:
+    """Cool setpoint for predicted temp tp: the cooler the predicted room, the higher the setpoint.
+
+    With a fresh outdoor reading: first row of cool_offsets with tp <= target + offset, else
+    cool_offsets_else, never below cool_floor(out_f). Without one: the fixed cool_table.
+    """
+    tgt = adaptive_target(out_f, t)
+    if tgt is None:
+        for x, sp in t.cool_table:
+            if tp <= x:
+                return sp
+        return t.cool_floor
+    sp = t.cool_offsets_else
+    for off, v in t.cool_offsets:
+        if tp <= tgt + off + 1e-9:
+            sp = v
+            break
+    return max(sp, cool_floor(out_f, t))
 
 
 def decide(T, state, now_ts, live=None, t: Tuning | None = None):
@@ -125,22 +171,25 @@ def decide(T, state, now_ts, live=None, t: Tuning | None = None):
 
     # --- regime switch (only on fresh data, never faster than the short sun dwell)
     pending_note = None
+    out_f = outdoor_fresh(s, now_ts, t)
+    h2c = heat_to_cool_f(out_f, t)
+    sun_f = min(t.sun_override_f, h2c)
     dwell = None if s["regime_since"] is None else now_ts - s["regime_since"]
     if fresh and (dwell is None or dwell >= t.sun_dwell_h * 3600):
         new = None
         held_min = t.cool_to_heat_hold_min
         full_dwell = dwell is None or dwell >= t.regime_min_h * 3600
-        if s["regime"] == "heat" and held(hist, lambda x: x >= t.heat_to_cool_f,
+        if s["regime"] == "heat" and held(hist, lambda x: x >= h2c,
                                           t.heat_to_cool_hold_min, now_ts, gmax):
             held_min = t.heat_to_cool_hold_min
             out_ok, out_txt = outdoor_ok(s, now_ts, t)
-            sun = held(hist, lambda x: x >= t.sun_override_f, t.heat_to_cool_hold_min, now_ts, gmax)
+            sun = held(hist, lambda x: x >= sun_f, t.heat_to_cool_hold_min, now_ts, gmax)
             if sun:
                 new = "cool"   # solar-gain rule: 1 h dwell, bypasses the outdoor gate
             elif out_ok and full_dwell:
                 new = "cool"   # warm outside: normal 3 h dwell
             else:
-                pending_note = f"cool switch blocked: {out_txt}, room not held >= {t.sun_override_f}"
+                pending_note = f"cool switch blocked: {out_txt}, room not held >= {sun_f}"
         elif (s["regime"] == "cool" and full_dwell
               and held(hist, lambda x: x <= t.cool_to_heat_f, t.cool_to_heat_hold_min, now_ts, gmax)):
             new = "heat"
@@ -185,23 +234,24 @@ def decide(T, state, now_ts, live=None, t: Tuning | None = None):
         desired = {"mode": "heat", "heat_setpoint": new_sp, "cool_setpoint": t.cool_park, "fan": t.fan}
         info = {"base": base, "want": want}
     else:
-        want = cool_target(Tp, t)
+        want = cool_target(Tp, t, out_f)
         sp = s["cool_sp"]
         if sp is None or want >= sp:   # raising the cool setpoint (less cooling) is immediate
             new_sp = want
         else:                          # lowering it (more cooling) is rate limited
             ok = s["cool_sp_changed_at"] is None or now_ts - s["cool_sp_changed_at"] >= step_s
             new_sp = sp - 1 if ok else sp
-        new_sp = int(clamp(new_sp, t.cool_floor, t.cool_max))
+        new_sp = int(clamp(new_sp, cool_floor(out_f, t), t.cool_max))
         if new_sp != s["cool_sp"]:
             if s["cool_sp"] is not None:
                 events.append(f"cool SP {s['cool_sp']} -> {new_sp} (want {want})")
             s["cool_sp"], s["cool_sp_changed_at"] = new_sp, now_ts
         desired = {"mode": "cool", "heat_setpoint": t.heat_park, "cool_setpoint": new_sp, "fan": t.fan}
-        info = {"want": want}
+        info = {"want": want, "floor": cool_floor(out_f, t)}
     info.update({"T": T, "Tp": round(Tp, 2), "S": round(S, 2), "g": None if g is None else round(g, 1),
                  "ref_age_min": None if ref_age is None else round(ref_age), "trim": s["trim"],
-                 "regime": s["regime"], "outdoor": outdoor_ok(s, now_ts, t)[1], "blocked": pending_note})
+                 "regime": s["regime"], "outdoor": outdoor_ok(s, now_ts, t)[1], "blocked": pending_note,
+                 "cool_target": adaptive_target(out_f, t), "h2c": h2c})
     return desired, s, info, events
 
 
@@ -224,7 +274,9 @@ def info_text(i) -> str:
     sl = f"S {i['S']:+.2f}F/h" + (f" vs {i['ref_age_min']}m ago" if i.get("ref_age_min") else " (no ref)")
     g = "first reading" if i["g"] is None else f"g {i['g']:.0f}m"
     return (f"{i.get('outdoor', 'outdoor n/a')}; T {i['T']:.1f} Tp {i['Tp']:.2f} {sl} {g} "
-            f"trim {i['trim']:+d} regime {i['regime']}")
+            f"trim {i['trim']:+d} regime {i['regime']}"
+            + (f" ctgt {i['cool_target']:.1f}" if i.get("cool_target") is not None else " ctgt table")
+            + (f" h2c {i['h2c']:.1f}" if i.get("h2c") is not None else ""))
 
 
 def next_due(due, started, finished, interval, late_tol=60):

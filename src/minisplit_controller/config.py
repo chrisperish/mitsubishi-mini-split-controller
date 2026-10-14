@@ -34,7 +34,8 @@ class Tuning:
     slope_limit: float = 2.0           # |slope| cap in F/h
     regime_min_h: float = 3.0          # normal minimum dwell between regime switches
     sun_dwell_h: float = 1.0           # shorter dwell for the solar-gain heat -> cool switch
-    heat_to_cool_f: float = 73.0       # room must hold at or above this to start cooling
+    heat_to_cool_f: float = 73.0       # room must hold at or above this to start cooling (upper cap
+                                       # when outdoor data is fresh: min(this, cool target + margin))
     heat_to_cool_hold_min: float = 20.0
     sun_override_f: float = 73.0       # holding >= this for the hold window switches to cool on a 1 h dwell,
                                        # even when it is cold outside (solar gain)
@@ -52,7 +53,21 @@ class Tuning:
     heat_table: list = field(default_factory=lambda: [(70.6, 66), (70.0, 67), (69.4, 68), (68.8, 69), (68.2, 70)])
     # (threshold, setpoint): cool uses the first row with Tp <= threshold, else cool_floor.
     cool_table: list = field(default_factory=lambda: [(71.4, 78), (72.0, 77), (72.6, 76), (73.2, 75), (73.8, 74)])
-    cool_floor: int = 73               # lowest cool setpoint the controller will send
+    cool_floor: int = 73               # lowest cool setpoint on warm days, or without outdoor data
+    # Outdoor-adaptive cooling (used only with an outdoor reading at most outdoor_max_age_h old).
+    adaptive_cool: bool = True
+    cool_target_out_lo_f: float = 55.0  # at or below this outdoor temp the cool target is cool_target_lo_f
+    cool_target_out_hi_f: float = 80.0  # at or above this outdoor temp the cool target is cool_target_hi_f
+    cool_target_lo_f: float = 70.5
+    cool_target_hi_f: float = 73.5
+    # (offset, setpoint): cool uses the first row with Tp <= target + offset, else cool_offsets_else.
+    cool_offsets: list = field(default_factory=lambda: [(-0.6, 78), (0.0, 77), (0.6, 76), (1.2, 75),
+                                                        (1.8, 74), (2.4, 73), (3.0, 72)])
+    cool_offsets_else: int = 71
+    # (outdoor threshold, floor): lowest cool setpoint is the first row with outdoor <= threshold, else cool_floor.
+    cool_floor_table: list = field(default_factory=lambda: [(60.0, 71), (67.0, 72)])
+    cool_min: int = 71                 # absolute lowest cool setpoint any table may produce
+    heat_to_cool_margin_f: float = 1.5  # heat -> cool entry = min(heat_to_cool_f, cool target + this)
     cool_max: int = 78                 # highest cool setpoint the controller will send
 
 
@@ -114,7 +129,7 @@ def load(path: str | os.PathLike | None = None, env: dict | None = None) -> Sett
         for k, v in data.get("tuning", {}).items():
             if k not in names:
                 raise ValueError(f"unknown tuning key: {k}")
-            if k in ("heat_table", "cool_table"):
+            if k in ("heat_table", "cool_table", "cool_offsets", "cool_floor_table"):
                 v = [tuple(row) for row in v]
             setattr(s.tuning, k, v)
     for var, attr in ENV.items():
@@ -141,7 +156,22 @@ def validate(s: Settings) -> None:
     _need(s.longitude is None or -180 <= s.longitude <= 180, "longitude must be -180..180")
     _need(60 <= t.target_f <= 80, "target_f must be 60..80")
     _need(61 <= t.heat_min <= t.heat_max <= 80, "need 61 <= heat_min <= heat_max <= 80")
-    _need(64 <= t.cool_floor <= t.cool_max <= 88, "need 64 <= cool_floor <= cool_max <= 88")
+    _need(64 <= t.cool_min <= t.cool_floor <= t.cool_max <= 88, "need 64 <= cool_min <= cool_floor <= cool_max <= 88")
+    _need(isinstance(t.adaptive_cool, bool), "adaptive_cool must be true or false")
+    _need(-20 <= t.cool_target_out_lo_f < t.cool_target_out_hi_f <= 120,
+          "need -20 <= cool_target_out_lo_f < cool_target_out_hi_f <= 120")
+    _need(65 <= t.cool_target_lo_f <= t.cool_target_hi_f <= 80, "need 65 <= cool_target_lo_f <= cool_target_hi_f <= 80")
+    _need(0 <= t.heat_to_cool_margin_f <= 5, "heat_to_cool_margin_f must be 0..5")
+    _need(t.cool_to_heat_f < min(t.heat_to_cool_f, t.cool_target_lo_f + t.heat_to_cool_margin_f),
+          "cool_to_heat_f must be below cool_target_lo_f + heat_to_cool_margin_f")
+    _need(t.cool_min <= t.cool_offsets_else <= t.cool_max, "cool_offsets_else must be within cool_min..cool_max")
+    for name, lo, hi in (("cool_offsets", -5, 5), ("cool_floor_table", -20, 120)):
+        rows = getattr(t, name)
+        _need(len(rows) > 0 and all(len(r) == 2 for r in rows), f"{name} must be [[threshold, setpoint], ...]")
+        _need(all(lo <= x <= hi for x, _ in rows), f"{name} thresholds must be within {lo}..{hi}")
+        _need(all(a[0] < b[0] for a, b in zip(rows, rows[1:])), f"{name} thresholds must increase")
+        _need(all(t.cool_min <= sp <= t.cool_max for _, sp in rows),
+              f"{name} setpoints must be within cool_min..cool_max")
     _need(61 <= t.heat_park <= 80 and 64 <= t.cool_park <= 88, "park setpoints out of range")
     _need(t.cool_to_heat_f < t.heat_to_cool_f, "cool_to_heat_f must be below heat_to_cool_f")
     _need(t.trim_min <= 0 <= t.trim_max, "need trim_min <= 0 <= trim_max")
