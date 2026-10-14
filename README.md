@@ -1,6 +1,8 @@
-# Mitsubishi Mini-Split Controller
+# Mitsubishi Mini-Split Controller: a steadier alternative to Auto mode
 
-**A small controller that keeps a Mitsubishi mini-split in heat and steers its setpoint toward 70°F. In simulation it matches a band-aimed Stock Auto on time in band and cools less; it has not yet beaten the author's earlier version in a real trial.**
+**An unofficial Python controller for Mitsubishi mini-split heat pumps on the Kumo Cloud / Mitsubishi Comfort app. It aims to cut overshoot and temperature swings by keeping the unit in heat and steering the setpoint toward 70°F instead of relying on Auto mode's heat/cool changeover. In simulation it matches a band-aimed Stock Auto on time in band and cools less; it has not yet beaten the author's earlier version in a real trial.**
+
+It talks to the same cloud backend as the Mitsubishi Comfort app (Kumo Cloud v3) through a bundled client, runs every 10 minutes on any always-on machine with Python 3.11+, and writes a CSV log so you can check your own results. Not affiliated with Mitsubishi Electric.
 
 ![Simulated, not measured: Stock Auto at 70/72 and the controller both stay near the band; Stock Auto switches to cooling earlier in afternoon sun and cools longer](docs/charts/illustrative-chart1-timeline.png)
 
@@ -55,6 +57,45 @@ Charts are a simulation that shows the behavior. Your results depend on your roo
 The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The simulated controller gets no outdoor reading, so it runs on the fixed cool table and the 73°F entry point, exactly as an install without `MSC_LATITUDE` / `MSC_LONGITUDE` would. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
 
 Overnight the controller toggles its heat setpoint between 69 and 70°F about every 30 minutes, because the predicted temperature sits right on a table threshold. The unit only sees a 1°F nudge each time, so the room stays steady.
+
+## Quick start
+
+You need a Mitsubishi Comfort app account with the unit already set up in the app, and Python 3.11 or newer.
+
+```bash
+git clone https://github.com/chrisperish/mitsubishi-mini-split-controller.git
+cd mitsubishi-mini-split-controller
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .
+minisplit-controller --help                     # verified: installs and runs
+
+export MITSUBISHI_COMFORT_EMAIL="you@example.com"
+export MITSUBISHI_COMFORT_PASSWORD="..."
+python3 client/mitsubishi.py login              # store cloud tokens
+python3 client/mitsubishi.py status             # find your unit's serial or name
+export MSC_DEVICE="Living Room"                 # your unit's serial or name
+minisplit-controller --once --dry-run           # decide and print, change nothing
+```
+
+Run these from the repository root: the default `MSC_CLIENT_CMD` is `python3 client/mitsubishi.py`, a relative path. Without `MSC_DEVICE` the controller stops at startup with a message asking for it. When the dry run looks right, see [Run and schedule](#run-and-schedule). `scripts/restore.sh` puts the unit back on stock Auto 67/73.
+
+To try it with no unit at all, run the simulation that draws the README charts: `pip install -e ".[charts]" && python scripts/make_charts.py`.
+
+## Compatibility
+
+| Item | Status |
+|---|---|
+| Cloud / API | Mitsubishi Comfort app cloud (Kumo Cloud v3, `app-prod.kumocloud.com`). This is the only path the controller uses |
+| Kumo Cloud Wi-Fi adapter units set up in the Comfort app | Supported by design; tested only on the author's own unit |
+| MELCloud (Mitsubishi Electric outside North America) | Not supported: different cloud, not implemented |
+| Local LAN control | Not used by the controller. The bundled client has an experimental `--transport lan` option, untested with the controller |
+| Specific indoor unit models | Unknown: no model list has been verified |
+| Multiple indoor units | One unit per controller instance (`MSC_DEVICE`); running several instances is untested |
+| Mitsubishi wireless temperature sensor | Supported, optional |
+| Units of °C | The controller logic works in °F; °C-only accounts are unknown |
+| Python | 3.11 or newer (`requires-python`); tests run on Linux |
+| Operating system | Linux verified; macOS likely (POSIX scripts, `fcntl`); Windows unknown and unlikely (`fcntl` is POSIX-only) |
+| Home Assistant | Not an integration; runs as a standalone process |
 
 ## Setup
 
@@ -167,6 +208,22 @@ Why: the same 0.6°F steps per 1°F of setpoint as the other tables (the unit's 
 **The 73°F solar-gain rule** (`sun_override_f = 73`, `heat_to_cool_f = 73`, `heat_to_cool_margin_f = 1.5`, `heat_to_cool_hold_min = 20`, `sun_dwell_h = 1`): switch to cool when the room holds at or above 73°F (or min(73, cool target + 1.5) with fresh outdoor data, so 72.0°F at 55°F or colder outside) for 20 minutes, at least 1 hour after the last switch, whatever the outdoor temperature. Why this value: with the heat setpoint already at its floor, the only thing that pushes a room past 73°F is solar gain. 73 is 2°F above the band, far enough that heating overshoot alone does not reach it, and the 20-minute hold filters out a single warm reading. The +1.5°F margin keeps the entry point 1.5°F above the cool target, so cooling starts only once the room is clearly past where it would settle, and on cold days it starts a little earlier, before the afternoon peak builds. Going back to heat needs 68°F held for 45 minutes and a 3-hour dwell, so a short cloud does not cause a flip.
 
 **Outdoor gate** (`outdoor_min_f = 62`): the other way into cool needs outdoor air at 62°F or warmer and a 3-hour dwell. Why: on a warm day the room can drift up without sun, and requiring warm outdoor air plus the full 3-hour dwell keeps a brief warm spell on a cold day from starting a cooling cycle. 62°F is a starting point; adjust it for your climate.
+
+## FAQ
+
+**Does this replace the Mitsubishi Comfort app or Kumo Cloud?** No. It uses your Comfort account and the same Kumo Cloud backend, so the app keeps working and shows the settings the controller sends.
+
+**Why not just use Auto mode?** Auto mode keeps a heat and a cool setpoint and only switches mode when the room crosses the other one, so the room can sit away from the target for long stretches. This controller stays in heat, adjusts the setpoint from a 15-minute temperature prediction to limit overshoot, and only cools for solar gain. See [The problem](#the-problem).
+
+**Are the charts real measurements?** No. They are an illustrative simulation (`scripts/simulate.py`, seed 42). In the author's real trial this version has not yet beaten the earlier one on time in band.
+
+**Does it work with MELCloud?** No. Only the Comfort app / Kumo Cloud cloud is implemented.
+
+**What happens if the cloud or my internet goes down?** The unit keeps its last settings. The controller never turns a unit on and leaves an off or offline unit alone.
+
+**How do I undo it?** Run `scripts/restore.sh`, which stops the loop and sets the unit back to stock Auto 67/73.
+
+**Can I use Celsius?** All targets and tables are in °F. How it behaves with a Comfort account set to °C has not been verified.
 
 ## Limitations and safety
 
