@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "Mitsubishi Mini-Split Controller"
-abstract: "Unofficial Python controller for Mitsubishi mini-split heat pumps on the Kumo Cloud / Mitsubishi Comfort app cloud. It keeps the unit in heat and steers the setpoint toward a target to reduce overshoot and temperature swings compared with Auto mode."
+abstract: "Experimental, unofficial Python controller for Mitsubishi mini-split heat pumps on Kumo Cloud and the Mitsubishi Comfort app. An alternative to Auto mode: stays in heat, steers the setpoint from a 15-minute temperature prediction, cools only for solar gain, and logs every cycle to CSV."
 type: software
 authors:
   - given-names: Chris

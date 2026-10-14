@@ -93,14 +93,12 @@ def test_readme_claims_are_qualified():
     assert "Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate." in README
     assert "The controller writes its own log so you can chart your real results." in README
     assert "## What to expect" in README and "## Results" not in README
-    assert ("In the author's own trial, real logs showed that v2 (this controller) has not yet beaten v1 "
-            "(an earlier heat/cool switching version) on time in band (roughly 44% vs 71%), and that strong "
-            "afternoon sun pushed the room above the band.") in README
-    assert "In simulation" in README.splitlines()[2]           # tagline
+    assert "**Status: experimental.**" in README
+    assert "In the author's own trial, this version has not yet beaten an earlier, simpler version (roughly 44% vs 71% of time in band)." in README
     for alt in re.findall(r"!\[([^\]]*)\]", README):
         assert alt.startswith("Simulated, not measured"), alt
     assert "A 67/73 Auto (the defaults `scripts/restore.sh` puts back) is not trying to hold a 69 to 71°F band" in README
-    assert README.index("In the author's own trial") < README.index("## The problem")   # near the top
+    assert README.index("**Status: experimental.**") < README.index("## The problem")   # near the top
     assert "toggles its heat setpoint between 69 and 70°F about every 30 minutes" in README
     assert "mixed" not in README.splitlines()[2]
 

@@ -1,12 +1,14 @@
-# Mitsubishi Mini-Split Controller: a steadier alternative to Auto mode
+# Mitsubishi Mini-Split Controller: an experimental alternative to Auto mode
 
-**An unofficial Python controller for Mitsubishi mini-split heat pumps on the Kumo Cloud / Mitsubishi Comfort app. It aims to cut overshoot and temperature swings by keeping the unit in heat and steering the setpoint toward 70°F instead of relying on Auto mode's heat/cool changeover. In simulation it matches a band-aimed Stock Auto on time in band and cools less; it has not yet beaten the author's earlier version in a real trial.**
+An unofficial, experimental Python controller for Mitsubishi mini-split heat pumps on Kumo Cloud and the Mitsubishi Comfort app. Instead of Auto mode's heat/cool changeover, it keeps the unit in heat, steers the setpoint toward 70°F from a 15-minute temperature prediction, and cools only when sun pushes the room to 73°F or more (as low as 72°F on cold days when outdoor data is configured).
+
+**Status: experimental.** It runs daily in the author's home but has not yet proven steadier than a simpler approach there. Treat it as a starting point and check your own log.
+
+In the author's own trial, this version has not yet beaten an earlier, simpler version (roughly 44% vs 71% of time in band).
 
 It talks to the same cloud backend as the Mitsubishi Comfort app (Kumo Cloud v3) through a bundled client, runs every 10 minutes on any always-on machine with Python 3.11+, and writes a CSV log so you can check your own results. Not affiliated with Mitsubishi Electric.
 
 ![Simulated, not measured: Stock Auto at 70/72 and the controller both stay near the band; Stock Auto switches to cooling earlier in afternoon sun and cools longer](docs/charts/illustrative-chart1-timeline.png)
-
-In the author's own trial, real logs showed that v2 (this controller) has not yet beaten v1 (an earlier heat/cool switching version) on time in band (roughly 44% vs 71%), and that strong afternoon sun pushed the room above the band.
 
 ## The problem
 
@@ -54,20 +56,20 @@ T is the wireless sensor reading if it is at most 20 minutes old, else the unit'
 
 Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate.
 
-The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated so the controller run peaks near 74.3°F, the peak seen in the author's real log. The simulated controller gets no outdoor reading, so it runs on the fixed cool table and the 73°F entry point, exactly as an install without `MSC_LATITUDE` / `MSC_LONGITUDE` would. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
+The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated so the controller run peaks near 74.3°F, a realistic sunny-afternoon peak. The simulated controller gets no outdoor reading, so it runs on the fixed cool table and the 73°F entry point, exactly as an install without `MSC_LATITUDE` / `MSC_LONGITUDE` would. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
 
 Overnight the controller toggles its heat setpoint between 69 and 70°F about every 30 minutes, because the predicted temperature sits right on a table threshold. The unit only sees a 1°F nudge each time, so the room stays steady.
 
 ## Quick start
 
-You need a Mitsubishi Comfort app account with the unit already set up in the app, and Python 3.11 or newer.
+You need a Mitsubishi Comfort app account with the unit already set up in the app, and Python 3.11 or newer. Run these from the repository root: the default `MSC_CLIENT_CMD` is `python3 client/mitsubishi.py`, a relative path.
 
 ```bash
 git clone https://github.com/chrisperish/mitsubishi-mini-split-controller.git
 cd mitsubishi-mini-split-controller
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
-minisplit-controller --help                     # verified: installs and runs
+minisplit-controller --help
 
 export MITSUBISHI_COMFORT_EMAIL="you@example.com"
 export MITSUBISHI_COMFORT_PASSWORD="..."
@@ -77,7 +79,7 @@ export MSC_DEVICE="Living Room"                 # your unit's serial or name
 minisplit-controller --once --dry-run           # decide and print, change nothing
 ```
 
-Run these from the repository root: the default `MSC_CLIENT_CMD` is `python3 client/mitsubishi.py`, a relative path. Without `MSC_DEVICE` the controller stops at startup with a message asking for it. When the dry run looks right, see [Run and schedule](#run-and-schedule). `scripts/restore.sh` puts the unit back on stock Auto 67/73.
+Without `MSC_DEVICE` the controller stops at startup with a message asking for it. When the dry run looks right, see [Run and schedule](#run-and-schedule). `scripts/restore.sh` puts the unit back on stock Auto 67/73.
 
 To try it with no unit at all, run the simulation that draws the README charts: `pip install -e ".[charts]" && python scripts/make_charts.py`.
 
@@ -86,7 +88,7 @@ To try it with no unit at all, run the simulation that draws the README charts: 
 | Item | Status |
 |---|---|
 | Cloud / API | Mitsubishi Comfort app cloud (Kumo Cloud v3, `app-prod.kumocloud.com`). This is the only path the controller uses |
-| Kumo Cloud Wi-Fi adapter units set up in the Comfort app | Supported by design; tested only on the author's own unit |
+| Kumo Cloud Wi-Fi adapter units set up in the Comfort app | Expected to work; tested on one unit |
 | MELCloud (Mitsubishi Electric outside North America) | Not supported: different cloud, not implemented |
 | Local LAN control | Not used by the controller. The bundled client has an experimental `--transport lan` option, untested with the controller |
 | Specific indoor unit models | Unknown: no model list has been verified |
@@ -213,11 +215,13 @@ Why: the same 0.6°F steps per 1°F of setpoint as the other tables (the unit's 
 
 **Does this replace the Mitsubishi Comfort app or Kumo Cloud?** No. It uses your Comfort account and the same Kumo Cloud backend, so the app keeps working and shows the settings the controller sends.
 
-**Why not just use Auto mode?** Auto mode keeps a heat and a cool setpoint and only switches mode when the room crosses the other one, so the room can sit away from the target for long stretches. This controller stays in heat, adjusts the setpoint from a 15-minute temperature prediction to limit overshoot, and only cools for solar gain. See [The problem](#the-problem).
+**Why not just use Auto mode?** Auto mode keeps a heat and a cool setpoint and only switches mode when the room crosses the other one, so the room can sit away from the target for long stretches. This controller stays in heat, adjusts the setpoint from a 15-minute temperature prediction, aiming to limit overshoot, and only cools for solar gain. See [The problem](#the-problem).
 
-**Are the charts real measurements?** No. They are an illustrative simulation (`scripts/simulate.py`, seed 42). In the author's real trial this version has not yet beaten the earlier one on time in band.
+**Are the charts real measurements?** No. They are an illustrative simulation (`scripts/simulate.py`). The controller logs every cycle so you can chart your own results with `--from-log`.
 
 **Does it work with MELCloud?** No. Only the Comfort app / Kumo Cloud cloud is implemented.
+
+**Does it save energy?** Unknown. Energy use has not been measured. In simulation it cools for fewer hours than a 70/72 Auto, but that is not a measured saving.
 
 **What happens if the cloud or my internet goes down?** The unit keeps its last settings. The controller never turns a unit on and leaves an off or offline unit alone.
 
