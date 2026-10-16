@@ -39,10 +39,10 @@ def test_setpoint_table_ends():
 
 def test_floor_boundaries():
     assert cool_floor(None, T) == 73
-    assert cool_floor(60, T) == 71 and cool_floor(60.1, T) == 72
-    assert cool_floor(67, T) == 72 and cool_floor(67.1, T) == 73
+    assert cool_floor(60, T) == 71 and cool_floor(65, T) == 71 and cool_floor(67.9, T) == 71
+    assert cool_floor(68, T) == 73 and cool_floor(70, T) == 73
     assert cool_target(80.0, T, 85) == 73               # hot day: clamped at 73
-    assert cool_target(76.0, T, 65) == 72               # mild day: clamped at 72
+    assert cool_target(76.0, T, 65) == 71               # mild day (< 68F outside): floor 71
     assert cool_target(73.5, T, 85) == 77
 
 

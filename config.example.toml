@@ -18,7 +18,14 @@ heat_min = 66
 heat_max = 71
 cool_park = 76
 heat_park = 66
-fan = "auto"
+fan = "auto"           # used only when fan_staging = false
+# Fan staging: e = Tp - cool target (cool) or target_f - Tp (heat); first row with e <= x wins
+fan_staging = true
+fan_stages = [[0.3, "quiet"], [0.8, "low"], [1.5, "low"], [2.5, "powerful"], [inf, "superPowerful"]]
+fan_down_hyst_f = 0.3         # step down only when e <= lower stage's threshold - this ...
+fan_down_cycles = 2           # ... on this many consecutive cycles
+fan_max_up = 2                # step up immediately, at most this many stages per cycle
+fan_cool_target_default_f = 72.0   # cool target for fan staging without an outdoor reading
 sensor_max_age_min = 20.0
 history_h = 4.0
 gap_max_min = 30.0
@@ -50,7 +57,7 @@ cool_target_lo_f = 70.5
 cool_target_hi_f = 73.5
 cool_offsets = [[-0.6, 78], [0.0, 77], [0.6, 76], [1.2, 75], [1.8, 74], [2.4, 73], [3.0, 72]]   # Tp <= target + x -> cool SP
 cool_offsets_else = 71
-cool_floor_table = [[60.0, 71], [67.0, 72]]   # outdoor <= x -> lowest cool SP; else cool_floor
+cool_floor_table = [[68.0, 71]]   # outdoor < x -> lowest cool SP; else cool_floor
 cool_min = 71
 heat_to_cool_margin_f = 1.5   # heat -> cool entry = min(heat_to_cool_f, cool target + this)
 cool_max = 78

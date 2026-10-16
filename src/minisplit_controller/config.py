@@ -16,6 +16,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Fan speed names the Comfort client accepts (client/mitsubishi.py ALL_FANS; a test keeps them in sync).
+# A given unit may support fewer; the client rejects those at send time.
+FAN_SPEEDS = ("superQuiet", "quiet", "low", "powerful", "superPowerful", "auto")
+
 
 @dataclass
 class Tuning:
@@ -26,7 +30,16 @@ class Tuning:
     heat_max: int = 71                 # highest heat setpoint the controller will send
     cool_park: int = 76                # cool setpoint while in the heat regime
     heat_park: int = 66                # heat setpoint while in the cool regime
-    fan: str = "auto"
+    fan: str = "auto"                  # fan speed when fan_staging is off (or no stage is known yet on a long gap)
+    # Fan staging: speed from the error e (cool: Tp - cool target, heat: target_f - Tp).
+    fan_staging: bool = True
+    # (threshold, speed): the first row with e <= threshold wins. Speeds are client fan names.
+    fan_stages: list = field(default_factory=lambda: [(0.3, "quiet"), (0.8, "low"), (1.5, "low"),
+                                                      (2.5, "powerful"), (float("inf"), "superPowerful")])
+    fan_down_hyst_f: float = 0.3       # step down only when e <= (lower stage's threshold - this) ...
+    fan_down_cycles: int = 2           # ... on this many consecutive cycles
+    fan_max_up: int = 2                # step up immediately, at most this many stages per cycle
+    fan_cool_target_default_f: float = 72.0   # cool target for fan staging when there is no outdoor reading
     sensor_max_age_min: float = 20.0   # older wireless-sensor readings fall back to the unit's own temp
     history_h: float = 4.0             # readings kept in state for slope / trim / hold checks
     gap_max_min: float = 30.0          # a gap longer than this disables slope, regime switch and trim
@@ -64,8 +77,8 @@ class Tuning:
     cool_offsets: list = field(default_factory=lambda: [(-0.6, 78), (0.0, 77), (0.6, 76), (1.2, 75),
                                                         (1.8, 74), (2.4, 73), (3.0, 72)])
     cool_offsets_else: int = 71
-    # (outdoor threshold, floor): lowest cool setpoint is the first row with outdoor <= threshold, else cool_floor.
-    cool_floor_table: list = field(default_factory=lambda: [(60.0, 71), (67.0, 72)])
+    # (outdoor threshold, floor): lowest cool setpoint is the first row with outdoor < threshold, else cool_floor.
+    cool_floor_table: list = field(default_factory=lambda: [(68.0, 71)])
     cool_min: int = 71                 # absolute lowest cool setpoint any table may produce
     heat_to_cool_margin_f: float = 1.5  # heat -> cool entry = min(heat_to_cool_f, cool target + this)
     cool_max: int = 78                 # highest cool setpoint the controller will send
@@ -129,8 +142,10 @@ def load(path: str | os.PathLike | None = None, env: dict | None = None) -> Sett
         for k, v in data.get("tuning", {}).items():
             if k not in names:
                 raise ValueError(f"unknown tuning key: {k}")
-            if k in ("heat_table", "cool_table", "cool_offsets", "cool_floor_table"):
+            if k in ("heat_table", "cool_table", "cool_offsets", "cool_floor_table", "fan_stages"):
                 v = [tuple(row) for row in v]
+                if k == "fan_stages":   # TOML: use inf for the last threshold
+                    v = [(float(x), str(sp)) for x, sp in v]
             setattr(s.tuning, k, v)
     for var, attr in ENV.items():
         if env.get(var) not in (None, ""):
@@ -172,6 +187,17 @@ def validate(s: Settings) -> None:
         _need(all(a[0] < b[0] for a, b in zip(rows, rows[1:])), f"{name} thresholds must increase")
         _need(all(t.cool_min <= sp <= t.cool_max for _, sp in rows),
               f"{name} setpoints must be within cool_min..cool_max")
+    _need(isinstance(t.fan_staging, bool), "fan_staging must be true or false")
+    fs = t.fan_stages
+    _need(len(fs) > 0 and all(len(r) == 2 for r in fs), "fan_stages must be [[threshold, speed], ...]")
+    _need(all(a[0] < b[0] for a, b in zip(fs, fs[1:])), "fan_stages thresholds must increase")
+    bad = [sp for _, sp in fs if sp not in FAN_SPEEDS]
+    _need(not bad, f"fan_stages has unknown fan speed(s) {', '.join(map(repr, bad))}; "
+                   f"supported: {', '.join(FAN_SPEEDS)}")
+    _need(t.fan in FAN_SPEEDS, f"unknown fan speed {t.fan!r}; supported: {', '.join(FAN_SPEEDS)}")
+    _need(0 <= t.fan_down_hyst_f <= 5, "fan_down_hyst_f must be 0..5")
+    _need(t.fan_down_cycles >= 1 and t.fan_max_up >= 1, "fan_down_cycles and fan_max_up must be >= 1")
+    _need(65 <= t.fan_cool_target_default_f <= 80, "fan_cool_target_default_f must be 65..80")
     _need(61 <= t.heat_park <= 80 and 64 <= t.cool_park <= 88, "park setpoints out of range")
     _need(t.cool_to_heat_f < t.heat_to_cool_f, "cool_to_heat_f must be below heat_to_cool_f")
     _need(t.trim_min <= 0 <= t.trim_max, "need trim_min <= 0 <= trim_max")
