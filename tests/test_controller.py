@@ -53,7 +53,7 @@ def rows(path):
 def test_cycle_switches_auto_to_heat_and_logs(settings):
     cl = FakeClient(LIVE, sensor={"temp_f": 69.0, "age_seconds": 60})
     r = make(settings, cl).cycle()
-    assert cl.sets == [{"mode": "heat", "heat-temp": 69, "cool-temp": 76}]
+    assert cl.sets == [{"mode": "heat", "heat-temp": 69, "cool-temp": 76, "fan": "low"}]   # e 1.0 -> low
     assert r["desired"]["mode"] == "heat"
     out = rows(settings.log_csv)
     assert list(out[0].keys()) == CSV_COLS and "synced" not in out[0]

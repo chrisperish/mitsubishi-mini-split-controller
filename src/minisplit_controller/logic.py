@@ -9,6 +9,10 @@ The controller keeps the unit in one of two regimes and never uses the unit's ow
   (70.5F when it is 55F or colder outside, rising linearly to 73.5F at 80F or warmer), never below
   an outdoor-dependent floor. Without a fresh outdoor reading the fixed cool table (73-78F) is used.
   The heat setpoint is parked at its minimum.
+* fan: staged from the error e (cool: Tp - cool target, heat: target - Tp), quiet up to superPowerful.
+  Steps up immediately (at most 2 stages per cycle), steps down only after e is 0.3F below the lower
+  stage's threshold on 2 consecutive cycles, and holds the current speed after a gap over 30 minutes.
+  The vane is never touched.
 
 Timestamps are Unix seconds. Temperatures are Fahrenheit.
 """
@@ -113,10 +117,10 @@ def adaptive_target(out_f, t: Tuning):
 
 
 def cool_floor(out_f, t: Tuning) -> int:
-    """Lowest cool setpoint allowed for this outdoor temp: first row with outdoor <= x, else cool_floor."""
+    """Lowest cool setpoint allowed for this outdoor temp: first row with outdoor < x, else cool_floor."""
     if out_f is not None and t.adaptive_cool:
         for x, sp in t.cool_floor_table:
-            if out_f <= x:
+            if out_f < x:
                 return sp
     return t.cool_floor
 
@@ -145,6 +149,43 @@ def cool_target(tp, t: Tuning, out_f=None) -> int:
             sp = v
             break
     return max(sp, cool_floor(out_f, t))
+
+
+def fan_raw_stage(e, t: Tuning) -> int:
+    """Index of the first fan stage with e <= its threshold (the last stage if none)."""
+    for i, (thr, _) in enumerate(t.fan_stages):
+        if e <= thr + 1e-9:
+            return i
+    return len(t.fan_stages) - 1
+
+
+def fan_stage(e, prev, down_count, t: Tuning):
+    """Next fan stage. Returns (stage, down_count).
+
+    Up: immediately, at most fan_max_up stages per cycle. Down: only after
+    e <= (threshold of the lower stage) - fan_down_hyst_f on fan_down_cycles consecutive cycles.
+    """
+    raw = fan_raw_stage(e, t)
+    if prev is None:
+        return raw, 0
+    prev = min(prev, len(t.fan_stages) - 1)
+    if raw > prev:
+        return min(raw, prev + t.fan_max_up), 0
+    down = fan_raw_stage(e + t.fan_down_hyst_f, t)
+    if down < prev:
+        down_count += 1
+        if down_count >= t.fan_down_cycles:
+            return down, 0
+        return prev, down_count
+    return prev, 0
+
+
+def fan_error(Tp, regime, out_f, t: Tuning) -> float:
+    """Fan staging error: cool = Tp - cool target (default when no outdoor data), heat = target_f - Tp."""
+    if regime == "cool":
+        tgt = adaptive_target(out_f, t)
+        return Tp - (t.fan_cool_target_default_f if tgt is None else tgt)
+    return t.target_f - Tp
 
 
 def decide(T, state, now_ts, live=None, t: Tuning | None = None):
@@ -248,6 +289,23 @@ def decide(T, state, now_ts, live=None, t: Tuning | None = None):
             s["cool_sp"], s["cool_sp_changed_at"] = new_sp, now_ts
         desired = {"mode": "cool", "heat_setpoint": t.heat_park, "cool_setpoint": new_sp, "fan": t.fan}
         info = {"want": want, "floor": cool_floor(out_f, t)}
+    # --- fan staging: only on fresh data (or the very first reading); after a long gap keep the speed
+    if t.fan_staging:
+        err = fan_error(Tp, s["regime"], out_f, t)
+        prev = s.get("fan_stage")
+        if prev is not None and not 0 <= prev < len(t.fan_stages):
+            prev = None
+        if fresh or g is None:
+            stage, s["fan_down_count"] = fan_stage(err, prev, s.get("fan_down_count", 0), t)
+            if prev is not None and stage != prev:
+                events.append(f"fan stage {prev} -> {stage} ({t.fan_stages[prev][1]} -> "
+                              f"{t.fan_stages[stage][1]}, e {err:+.2f})")
+            s["fan_stage"] = stage
+            fan = t.fan_stages[stage][1]
+        else:
+            fan = live.get("fan") or (t.fan_stages[prev][1] if prev is not None else t.fan)
+        desired["fan"] = fan
+        info.update({"fan_err": round(err, 2), "fan_stage": s.get("fan_stage"), "fan": fan})
     info.update({"T": T, "Tp": round(Tp, 2), "S": round(S, 2), "g": None if g is None else round(g, 1),
                  "ref_age_min": None if ref_age is None else round(ref_age), "trim": s["trim"],
                  "regime": s["regime"], "outdoor": outdoor_ok(s, now_ts, t)[1], "blocked": pending_note,
@@ -276,7 +334,8 @@ def info_text(i) -> str:
     return (f"{i.get('outdoor', 'outdoor n/a')}; T {i['T']:.1f} Tp {i['Tp']:.2f} {sl} {g} "
             f"trim {i['trim']:+d} regime {i['regime']}"
             + (f" ctgt {i['cool_target']:.1f}" if i.get("cool_target") is not None else " ctgt table")
-            + (f" h2c {i['h2c']:.1f}" if i.get("h2c") is not None else ""))
+            + (f" h2c {i['h2c']:.1f}" if i.get("h2c") is not None else "")
+            + (f" fan e {i['fan_err']:+.2f} stage {i['fan_stage']} {i['fan']}" if "fan_err" in i else ""))
 
 
 def next_due(due, started, finished, interval, late_tol=60):

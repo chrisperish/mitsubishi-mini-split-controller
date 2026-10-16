@@ -15,7 +15,7 @@ def st(**kw):
 def test_heat_table_and_immediate_lower():
     s = st(regime_since=0, last_ok_ts=None, sp=70, sp_changed_at=0)
     d, _, i, ev = decide(71.2, s, 10 * M)
-    assert d == {"mode": "heat", "heat_setpoint": 66, "cool_setpoint": 76, "fan": "auto"}
+    assert d == {"mode": "heat", "heat_setpoint": 66, "cool_setpoint": 76, "fan": "quiet"}
     assert i["S"] == 0 and ev and "70 -> 66" in ev[0]
 
 
@@ -51,8 +51,8 @@ def test_solar_gain_rule_switches_to_cool_after_1h_dwell():
     s = st(regime_since=0, history=hot, last_ok_ts=50 * M, outdoor_f=58, outdoor_ts=55 * M)
     d, s2, _, _ = decide(73.2, s, 61 * M)
     assert s2["regime"] == "cool"
-    # adaptive: 58F outdoor -> target 70.86, Tp 73.2 is +2.34 -> 73 (floor 71)
-    assert d == {"mode": "cool", "heat_setpoint": 66, "cool_setpoint": 73, "fan": "auto"}
+    # adaptive: 58F outdoor -> target 70.86, Tp 73.2 is +2.34 -> 73 (floor 71); fan e 2.34 -> powerful
+    assert d == {"mode": "cool", "heat_setpoint": 66, "cool_setpoint": 73, "fan": "powerful"}
     short = [[t * M, 73.5] for t in (45, 50, 55)]       # held only 15 min
     assert decide(73.5, st(regime_since=-REGIME_MIN_S, history=short, last_ok_ts=55 * M), 60 * M)[1]["regime"] == "heat"
     stale = st(regime_since=-REGIME_MIN_S, history=[[t * M, 73.5] for t in (30, 40, 50)], last_ok_ts=20 * M)
