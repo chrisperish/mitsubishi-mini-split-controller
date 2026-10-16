@@ -16,6 +16,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Fan speed names the Comfort client accepts (client/mitsubishi.py ALL_FANS; a test keeps them in sync).
+# A given unit may support fewer; the client rejects those at send time.
+FAN_SPEEDS = ("superQuiet", "quiet", "low", "powerful", "superPowerful", "auto")
+
 
 @dataclass
 class Tuning:
@@ -187,7 +191,10 @@ def validate(s: Settings) -> None:
     fs = t.fan_stages
     _need(len(fs) > 0 and all(len(r) == 2 for r in fs), "fan_stages must be [[threshold, speed], ...]")
     _need(all(a[0] < b[0] for a, b in zip(fs, fs[1:])), "fan_stages thresholds must increase")
-    _need(all(isinstance(sp, str) and sp for _, sp in fs), "fan_stages speeds must be non-empty strings")
+    bad = [sp for _, sp in fs if sp not in FAN_SPEEDS]
+    _need(not bad, f"fan_stages has unknown fan speed(s) {', '.join(map(repr, bad))}; "
+                   f"supported: {', '.join(FAN_SPEEDS)}")
+    _need(t.fan in FAN_SPEEDS, f"unknown fan speed {t.fan!r}; supported: {', '.join(FAN_SPEEDS)}")
     _need(0 <= t.fan_down_hyst_f <= 5, "fan_down_hyst_f must be 0..5")
     _need(t.fan_down_cycles >= 1 and t.fan_max_up >= 1, "fan_down_cycles and fan_max_up must be >= 1")
     _need(65 <= t.fan_cool_target_default_f <= 80, "fan_cool_target_default_f must be 65..80")

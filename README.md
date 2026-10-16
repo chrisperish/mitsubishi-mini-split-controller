@@ -203,12 +203,12 @@ Why: the same 0.6°F steps per 1°F of setpoint as the other tables (the unit's 
 
 **Fan staging** (`fan_staging = true`, `fan_stages`, `fan_down_hyst_f = 0.3`, `fan_down_cycles = 2`, `fan_max_up = 2`, `fan_cool_target_default_f = 72.0`): instead of leaving the fan on auto, the controller picks a speed from the error e. In cool, e = Tp minus the outdoor-adaptive cool target (72.0°F without a fresh outdoor reading). In heat, e = `target_f` (70°F) minus Tp. The first row with e ≤ threshold wins: ≤ 0.3 → quiet, ≤ 0.8 → low, ≤ 1.5 → low, ≤ 2.5 → powerful, else superPowerful. Rules:
 
-* Step up immediately, at most 2 stages per cycle.
+* Step up immediately, at most 2 stages per cycle. Because low appears twice (stages 1 and 2), a jump from quiet reaches only low on the first step-up cycle; powerful or superPowerful comes on the next cycle if e is still that high.
 * Step down only after e is at least 0.3°F below the lower stage's threshold on 2 consecutive cycles.
-* After a gap over `gap_max_min` (30 minutes) since the last good cycle, hold the unit's current speed.
+* After a gap over `gap_max_min` (30 minutes) since the last good cycle, hold the unit's current speed. If the unit reports no speed and there is no saved stage yet, the fan falls back to the fixed `fan` value (default `auto`).
 * A fan command is sent only when the speed changes. The vane is never touched.
 
-Why: staging keeps the unit quiet when the room is close and only pushes hard when it is clearly behind; the two 1F-wide "low" rows give a wide middle band, and the hysteresis keeps the fan from hunting between speeds each cycle. Speed names are the ones the Comfort client accepts; it has no separate medium or high, so medium maps to low and high to powerful. Set `fan_staging = false` to go back to a fixed `fan` (default `auto`).
+Why: staging keeps the unit quiet when the room is close and only pushes hard when it is clearly behind; the two "low" rows together cover 0.3 to 1.5°F, and the hysteresis keeps the fan from hunting between speeds each cycle. Speed names in `fan_stages` and `fan` are checked at config load against the speeds the Comfort client accepts (superQuiet, quiet, low, powerful, superPowerful, auto), and anything else is rejected with a config error. A particular unit may support fewer; the client rejects those when it sends. The client has no separate medium or high, so medium maps to low and high to powerful. Set `fan_staging = false` to go back to a fixed `fan` (default `auto`).
 
 **Fallback cool table** (`cool_table`): used when the outdoor reading is missing or older than 2 hours (or `adaptive_cool = false`). Tp ≤ 71.4 → 78, ≤ 72.0 → 77, ≤ 72.6 → 76, ≤ 73.2 → 75, ≤ 73.8 → 74, else 73. Why: cooling exists only to take the edge off solar gain, so the setpoint backs off quickly as the room comes down rather than chasing 70°F and swinging the room cold. Without outdoor data the controller cannot tell a cold day from a hot one, so it keeps the conservative 73 floor.
 

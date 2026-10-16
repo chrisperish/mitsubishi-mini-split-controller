@@ -83,3 +83,28 @@ def test_config_fan_stages_and_validation(tmp_path):
         p.write_text(bad)
         with pytest.raises(ValueError):
             config.load(p, env={})
+
+
+@pytest.mark.parametrize("bad", ['[tuning]\nfan_stages = [[0.5, "turbo"], [inf, "low"]]\n',
+                                 '[tuning]\nfan_stages = [[0.5, "quiet"], [inf, "bogus"]]\n',
+                                 '[tuning]\nfan = "turbo"\n', '[tuning]\nfan = "bogus"\n'])
+def test_unknown_fan_speed_rejected(tmp_path, bad):
+    p = tmp_path / "c.toml"
+    p.write_text(bad)
+    with pytest.raises(ValueError, match="unknown fan speed"):
+        config.load(p, env={})
+
+
+def test_fan_speeds_match_client():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "client" / "mitsubishi.py"
+    spec = importlib.util.spec_from_file_location("mitsubishi_client", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert set(config.FAN_SPEEDS) == set(mod.ALL_FANS)
+
+
+def test_long_gap_without_speed_or_stage_falls_back_to_fan():
+    d, s2, _, _ = decide(73.5, cool(last_ok_ts=10 * M), 60 * M, {"mode": "cool"})
+    assert d["fan"] == "auto" and s2.get("fan_stage") is None
