@@ -51,8 +51,8 @@ def test_solar_gain_rule_switches_to_cool_after_1h_dwell():
     s = st(regime_since=0, history=hot, last_ok_ts=50 * M, outdoor_f=58, outdoor_ts=55 * M)
     d, s2, _, _ = decide(73.2, s, 61 * M)
     assert s2["regime"] == "cool"
-    # adaptive: 58F outdoor -> target 70.86, Tp 73.2 is +2.34 -> 73 (floor 71); fan e 2.34 -> powerful
-    assert d == {"mode": "cool", "heat_setpoint": 66, "cool_setpoint": 73, "fan": "powerful"}
+    # adaptive: 58F outdoor -> target 70.86, Tp 73.2 is +2.34 -> 71 (floor 71); fan e 2.34 -> powerful
+    assert d == {"mode": "cool", "heat_setpoint": 66, "cool_setpoint": 71, "fan": "powerful"}
     short = [[t * M, 73.5] for t in (45, 50, 55)]       # held only 15 min
     assert decide(73.5, st(regime_since=-REGIME_MIN_S, history=short, last_ok_ts=55 * M), 60 * M)[1]["regime"] == "heat"
     stale = st(regime_since=-REGIME_MIN_S, history=[[t * M, 73.5] for t in (30, 40, 50)], last_ok_ts=20 * M)
@@ -74,7 +74,7 @@ def test_first_cool_sp_skips_step_and_cool_to_heat_keeps_3h_dwell():
 def test_cool_lower_limited_raise_immediate():
     s = st(regime="cool", regime_since=0, cool_sp=78, cool_sp_changed_at=0)
     d, s, _, _ = decide(74.0, s, 5 * M); assert d["cool_setpoint"] == 78
-    d, s, _, _ = decide(74.0, s, 16 * M); assert d["cool_setpoint"] == 77
+    d, s, _, _ = decide(74.0, s, 16 * M); assert d["cool_setpoint"] == 76   # e 2.0 vs fallback 72 > 1.5: 2F step
     d, s, _, _ = decide(70.0, s, 17 * M); assert d["cool_setpoint"] == 78
 
 

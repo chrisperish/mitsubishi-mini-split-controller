@@ -7,7 +7,9 @@ The controller keeps the unit in one of two regimes and never uses the unit's ow
 * cool: only when the room holds >= min(73F, cool target + 1.5F) for 20 minutes (solar gain, for
   example). The cool setpoint (71-78F) is picked from Tp minus an outdoor-adaptive cool target
   (70.5F when it is 55F or colder outside, rising linearly to 73.5F at 80F or warmer), never below
-  an outdoor-dependent floor. Without a fresh outdoor reading the fixed cool table (73-78F) is used.
+  an outdoor-dependent floor: 75 at the target, 1F colder per 0.5F above it, 71 past +1.5F.
+  Without a fresh outdoor reading the fixed cool table (73-78F) is used. Step-downs happen at most
+  once per 15 minutes, by 2F when Tp is more than 1.5F over the target, else by 1F.
   The heat setpoint is parked at its minimum.
 * fan: staged from the error e (cool: Tp - cool target, heat: target - Tp), quiet up to superPowerful.
   Steps up immediately (at most 2 stages per cycle), steps down only after e is 0.3F below the lower
@@ -151,6 +153,25 @@ def cool_target(tp, t: Tuning, out_f=None) -> int:
     return max(sp, cool_floor(out_f, t))
 
 
+def cool_step(tp, out_f, t: Tuning) -> int:
+    """Cool step-down size: cool_big_step when Tp is more than cool_big_err_f over the cool target
+    (cool_fallback_target_f without an outdoor reading), else 1."""
+    tgt = adaptive_target(out_f, t)
+    err = tp - (t.cool_fallback_target_f if tgt is None else tgt)
+    return t.cool_big_step if err > t.cool_big_err_f + 1e-9 else 1
+
+
+def deferred_due(last_ok_ts, now_ts, interval, skip_recent_s):
+    """Loop scheduling after an outside cycle (for example scripts/kick.sh running --once).
+
+    If a cycle finished less than skip_recent_s ago, return last_ok_ts + interval (the loop waits until
+    one interval after that cycle). Otherwise None: run now.
+    """
+    if last_ok_ts is None or not 0 <= now_ts - last_ok_ts < skip_recent_s:
+        return None
+    return last_ok_ts + interval
+
+
 def fan_raw_stage(e, t: Tuning) -> int:
     """Index of the first fan stage with e <= its threshold (the last stage if none)."""
     for i, (thr, _) in enumerate(t.fan_stages):
@@ -276,19 +297,20 @@ def decide(T, state, now_ts, live=None, t: Tuning | None = None):
         info = {"base": base, "want": want}
     else:
         want = cool_target(Tp, t, out_f)
+        step = cool_step(Tp, out_f, t)
         sp = s["cool_sp"]
         if sp is None or want >= sp:   # raising the cool setpoint (less cooling) is immediate
             new_sp = want
-        else:                          # lowering it (more cooling) is rate limited
+        else:                          # lowering it (more cooling) is rate limited, 1F or 2F per step
             ok = s["cool_sp_changed_at"] is None or now_ts - s["cool_sp_changed_at"] >= step_s
-            new_sp = sp - 1 if ok else sp
+            new_sp = max(want, sp - step) if ok else sp
         new_sp = int(clamp(new_sp, cool_floor(out_f, t), t.cool_max))
         if new_sp != s["cool_sp"]:
             if s["cool_sp"] is not None:
                 events.append(f"cool SP {s['cool_sp']} -> {new_sp} (want {want})")
             s["cool_sp"], s["cool_sp_changed_at"] = new_sp, now_ts
         desired = {"mode": "cool", "heat_setpoint": t.heat_park, "cool_setpoint": new_sp, "fan": t.fan}
-        info = {"want": want, "floor": cool_floor(out_f, t)}
+        info = {"want": want, "floor": cool_floor(out_f, t), "step": step}
     # --- fan staging: only on fresh data (or the very first reading); after a long gap keep the speed
     if t.fan_staging:
         err = fan_error(Tp, s["regime"], out_f, t)

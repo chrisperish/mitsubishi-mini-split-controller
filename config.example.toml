@@ -11,6 +11,7 @@ sensor_name = ""       # optional wireless sensor name if it is not linked to th
 # longitude = 0.0      # (env: MSC_LONGITUDE)
 interval_s = 600       # seconds between cycles (env: MSC_INTERVAL_S)
 timezone = "America/Los_Angeles"   # IANA zone for log timestamps (env: MSC_TIMEZONE)
+skip_recent_s = 300    # loop skips its cycle if a cycle (e.g. from scripts/kick.sh) ran this recently (env: MSC_SKIP_RECENT_S)
 
 [tuning]               # defaults shown; see README "Tuning"
 target_f = 70.0
@@ -47,7 +48,7 @@ trim_deadband_f = 0.4
 trim_min = -1
 trim_max = 2
 heat_table = [[70.6, 66], [70.0, 67], [69.4, 68], [68.8, 69], [68.2, 70]]   # Tp >= x -> heat SP; else heat_max
-cool_table = [[71.4, 78], [72.0, 77], [72.6, 76], [73.2, 75], [73.8, 74]]   # Tp <= x -> cool SP; else cool_floor
+cool_table = [[70.5, 78], [71.0, 77], [71.5, 76], [72.0, 75], [72.5, 74]]   # Tp <= x -> cool SP; else cool_floor
 cool_floor = 73        # lowest cool SP on warm days or without outdoor data
 # Outdoor-adaptive cooling: only with an outdoor reading <= outdoor_max_age_h old (needs latitude/longitude)
 adaptive_cool = true
@@ -55,9 +56,12 @@ cool_target_out_lo_f = 55.0   # outdoor at or below this -> cool target cool_tar
 cool_target_out_hi_f = 80.0   # outdoor at or above this -> cool target cool_target_hi_f (linear between)
 cool_target_lo_f = 70.5
 cool_target_hi_f = 73.5
-cool_offsets = [[-0.6, 78], [0.0, 77], [0.6, 76], [1.2, 75], [1.8, 74], [2.4, 73], [3.0, 72]]   # Tp <= target + x -> cool SP
+cool_offsets = [[-1.5, 78], [-1.0, 77], [-0.5, 76], [0.0, 75], [0.5, 74], [1.0, 73], [1.5, 72]]   # Tp <= target + x -> cool SP
 cool_offsets_else = 71
 cool_floor_table = [[68.0, 71]]   # outdoor < x -> lowest cool SP; else cool_floor
 cool_min = 71
 heat_to_cool_margin_f = 1.5   # heat -> cool entry = min(heat_to_cool_f, cool target + this)
 cool_max = 78
+cool_big_err_f = 1.5          # cool step-down is cool_big_step (not 1F) when Tp - cool target > this
+cool_big_step = 2
+cool_fallback_target_f = 72.0 # cool target for that check without an outdoor reading

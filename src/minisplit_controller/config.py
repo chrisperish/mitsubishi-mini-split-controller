@@ -65,7 +65,7 @@ class Tuning:
     # (threshold, setpoint): heat uses the first row with Tp >= threshold, else heat_max.
     heat_table: list = field(default_factory=lambda: [(70.6, 66), (70.0, 67), (69.4, 68), (68.8, 69), (68.2, 70)])
     # (threshold, setpoint): cool uses the first row with Tp <= threshold, else cool_floor.
-    cool_table: list = field(default_factory=lambda: [(71.4, 78), (72.0, 77), (72.6, 76), (73.2, 75), (73.8, 74)])
+    cool_table: list = field(default_factory=lambda: [(70.5, 78), (71.0, 77), (71.5, 76), (72.0, 75), (72.5, 74)])
     cool_floor: int = 73               # lowest cool setpoint on warm days, or without outdoor data
     # Outdoor-adaptive cooling (used only with an outdoor reading at most outdoor_max_age_h old).
     adaptive_cool: bool = True
@@ -74,14 +74,18 @@ class Tuning:
     cool_target_lo_f: float = 70.5
     cool_target_hi_f: float = 73.5
     # (offset, setpoint): cool uses the first row with Tp <= target + offset, else cool_offsets_else.
-    cool_offsets: list = field(default_factory=lambda: [(-0.6, 78), (0.0, 77), (0.6, 76), (1.2, 75),
-                                                        (1.8, 74), (2.4, 73), (3.0, 72)])
+    cool_offsets: list = field(default_factory=lambda: [(-1.5, 78), (-1.0, 77), (-0.5, 76), (0.0, 75),
+                                                        (0.5, 74), (1.0, 73), (1.5, 72)])
     cool_offsets_else: int = 71
     # (outdoor threshold, floor): lowest cool setpoint is the first row with outdoor < threshold, else cool_floor.
     cool_floor_table: list = field(default_factory=lambda: [(68.0, 71)])
     cool_min: int = 71                 # absolute lowest cool setpoint any table may produce
     heat_to_cool_margin_f: float = 1.5  # heat -> cool entry = min(heat_to_cool_f, cool target + this)
     cool_max: int = 78                 # highest cool setpoint the controller will send
+    # Cool step-down size: 1F per step_min, or cool_big_step when Tp - cool target > cool_big_err_f.
+    cool_big_err_f: float = 1.5
+    cool_big_step: int = 2
+    cool_fallback_target_f: float = 72.0   # cool target for the step size when there is no outdoor reading
 
 
 @dataclass
@@ -98,6 +102,8 @@ class Settings:
     timezone: str = "America/Los_Angeles"   # IANA zone for log timestamps (env: MSC_TIMEZONE)
     cli_timeout_s: int = 90
     cycle_watchdog_s: int = 360
+    skip_recent_s: int = 300           # loop skips its cycle if another (e.g. kick) cycle ran this recently;
+                                       # capped at interval_s / 2
     tuning: Tuning = field(default_factory=Tuning)
 
     @property
@@ -114,6 +120,7 @@ ENV = {  # env var -> Settings attribute
     "MSC_LONGITUDE": "longitude",
     "MSC_INTERVAL_S": "interval_s",
     "MSC_TIMEZONE": "timezone",
+    "MSC_SKIP_RECENT_S": "skip_recent_s",
 }
 
 
@@ -124,7 +131,7 @@ def _coerce(name: str, value):
         return Path(value).expanduser()
     if name in ("latitude", "longitude"):
         return None if value in ("", None) else float(value)
-    if name in ("interval_s", "cli_timeout_s", "cycle_watchdog_s"):
+    if name in ("interval_s", "cli_timeout_s", "cycle_watchdog_s", "skip_recent_s"):
         return int(value)
     return value
 
@@ -167,6 +174,7 @@ def validate(s: Settings) -> None:
     except (ZoneInfoNotFoundError, ValueError):
         raise ValueError(f"invalid config: unknown timezone {s.timezone!r}") from None
     _need(60 <= s.interval_s <= 3600, "interval_s must be 60..3600")
+    _need(0 <= s.skip_recent_s <= 3600, "skip_recent_s must be 0..3600 (the loop caps it at interval_s / 2)")
     _need(s.latitude is None or -90 <= s.latitude <= 90, "latitude must be -90..90")
     _need(s.longitude is None or -180 <= s.longitude <= 180, "longitude must be -180..180")
     _need(60 <= t.target_f <= 80, "target_f must be 60..80")
@@ -197,6 +205,9 @@ def validate(s: Settings) -> None:
     _need(t.fan in FAN_SPEEDS, f"unknown fan speed {t.fan!r}; supported: {', '.join(FAN_SPEEDS)}")
     _need(0 <= t.fan_down_hyst_f <= 5, "fan_down_hyst_f must be 0..5")
     _need(t.fan_down_cycles >= 1 and t.fan_max_up >= 1, "fan_down_cycles and fan_max_up must be >= 1")
+    _need(0 <= t.cool_big_err_f <= 5, "cool_big_err_f must be 0..5")
+    _need(1 <= t.cool_big_step <= 3, "cool_big_step must be 1..3")
+    _need(65 <= t.cool_fallback_target_f <= 80, "cool_fallback_target_f must be 65..80")
     _need(65 <= t.fan_cool_target_default_f <= 80, "fan_cool_target_default_f must be 65..80")
     _need(61 <= t.heat_park <= 80 and 64 <= t.cool_park <= 88, "park setpoints out of range")
     _need(t.cool_to_heat_f < t.heat_to_cool_f, "cool_to_heat_f must be below heat_to_cool_f")

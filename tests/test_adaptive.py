@@ -25,7 +25,7 @@ def test_target_interpolation():
     assert adaptive_target(70, replace(T, adaptive_cool=False)) is None
 
 
-@pytest.mark.parametrize("off, sp", [(-0.6, 78), (0.0, 77), (0.6, 76), (1.2, 75), (1.8, 74), (2.4, 73), (3.0, 72)])
+@pytest.mark.parametrize("off, sp", [(-1.5, 78), (-1.0, 77), (-0.5, 76), (0.0, 75), (0.5, 74), (1.0, 73), (1.5, 72)])
 def test_setpoint_table_edges(off, sp):
     tgt = adaptive_target(50, T)                       # 70.5, floor 71, so nothing is clamped
     assert cool_target(tgt + off, T, 50) == sp         # Tp exactly on the edge takes that row (<=)
@@ -43,11 +43,11 @@ def test_floor_boundaries():
     assert cool_floor(68, T) == 73 and cool_floor(70, T) == 73
     assert cool_target(80.0, T, 85) == 73               # hot day: clamped at 73
     assert cool_target(76.0, T, 65) == 71               # mild day (< 68F outside): floor 71
-    assert cool_target(73.5, T, 85) == 77
+    assert cool_target(73.5, T, 85) == 75               # hot day: at the 73.5 target -> 75
 
 
 def test_fallback_table_without_outdoor():
-    assert [cool_target(x, T) for x in (71.4, 72.0, 72.6, 73.2, 73.8, 74.5)] == [78, 77, 76, 75, 74, 73]
+    assert [cool_target(x, T) for x in (70.5, 71.0, 71.5, 72.0, 72.5, 72.6, 74.5)] == [78, 77, 76, 75, 74, 73, 73]
 
 
 def test_outdoor_fresh_and_stale():
@@ -85,7 +85,7 @@ def test_missing_or_stale_outdoor_falls_back(extra):
     _, s2, info, _ = decide(72.1, st(history=held, regime_since=0, last_ok_ts=now - 10 * M, **extra), now)
     assert s2["regime"] == "heat" and info["h2c"] == 73.0 and info["cool_target"] is None
     d, _, info, _ = decide(73.2, st(regime="cool", regime_since=0, last_ok_ts=now - 10 * M, **extra), now)
-    assert d["cool_setpoint"] == 75 and info["floor"] == 73
+    assert d["cool_setpoint"] == 73 and info["floor"] == 73   # fallback table: 73.2 > 72.5 -> floor 73
 
 
 @pytest.mark.parametrize("field, value", [
