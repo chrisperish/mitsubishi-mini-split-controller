@@ -103,7 +103,7 @@ class Settings:
     cli_timeout_s: int = 90
     cycle_watchdog_s: int = 360
     skip_recent_s: int = 300           # loop skips its cycle if another (e.g. kick) cycle ran this recently;
-                                       # capped at interval_s / 2
+                                       # clamped to interval_s / 2 at config load
     tuning: Tuning = field(default_factory=Tuning)
 
     @property
@@ -174,7 +174,9 @@ def validate(s: Settings) -> None:
     except (ZoneInfoNotFoundError, ValueError):
         raise ValueError(f"invalid config: unknown timezone {s.timezone!r}") from None
     _need(60 <= s.interval_s <= 3600, "interval_s must be 60..3600")
-    _need(0 <= s.skip_recent_s <= 3600, "skip_recent_s must be 0..3600 (the loop caps it at interval_s / 2)")
+    _need(0 <= s.skip_recent_s <= 3600, "skip_recent_s must be 0..3600")
+    # Above interval_s / 2 the loop would also skip right after its own cycle: clamp it.
+    s.skip_recent_s = min(s.skip_recent_s, s.interval_s // 2)
     _need(s.latitude is None or -90 <= s.latitude <= 90, "latitude must be -90..90")
     _need(s.longitude is None or -180 <= s.longitude <= 180, "longitude must be -180..180")
     _need(60 <= t.target_f <= 80, "target_f must be 60..80")

@@ -151,36 +151,61 @@ scripts/run_loop.sh                            # detached loop, every 10 min, pi
 scripts/restore.sh                             # stop the loop and put the unit back on stock Auto 67/73
 ```
 
-The loop sleeps in short chunks against the wall clock (it survives suspend and resume), caps each cycle with a watchdog, and logs a gap note when a cycle runs late. To start it at boot, use a systemd user service or `@reboot` cron entry that runs `scripts/run_loop.sh`.
+The loop sleeps in short chunks against the wall clock (it survives suspend and resume), caps each cycle with a watchdog, and logs a gap note when a cycle runs late. To start it at boot, use the systemd loop service or the `@reboot` cron entry in [Pause resilience](#pause-resilience).
 
-`--once` takes the same cycle lock as the loop, so it never overlaps a loop cycle (if a cycle is already running it logs nothing and exits 0). `--once --note TEXT` adds TEXT to the cycle's log row. It exits 2 when the cycle ends in an error (status read failed, command failed, crash or watchdog), else 0.
+`--once` takes the same cycle lock as the loop, so it never overlaps a loop cycle (if a cycle is already running it prints `another cycle is running; skipped`, logs nothing and exits 0). `--once --note TEXT` adds TEXT to the cycle's log row, including an Error row. When a cycle is skipped or fails before it decides anything, `--once` prints the reason. It exits 2 when the cycle ends in an error (status read failed, command failed, crash or watchdog), else 0.
 
 ### Pause resilience
 
 If the machine running the loop is paused, suspended or overloaded, cycles can be missed or the loop can die. `scripts/kick.sh` is a backup you run on a schedule (every 10 minutes is a good default). Each run does one of three things:
 
-* **Loop not running** (no live `--loop` process in `MSC_DATA_DIR/controller.pid`): start it with `scripts/run_loop.sh`.
-* **Heartbeat stale** (`MSC_DATA_DIR/heartbeat.json` older than `MSC_KICK_STALE_S`, default 720 s = 12 minutes; the loop rewrites it every 15 s while idle): run one cycle now with `--once --note "kick: ..."`, under a hard timeout of `MSC_KICK_TIMEOUT_S` (default 360 s = 6 minutes). Because `--once` uses the loop's cycle lock, it cannot overlap a loop cycle.
+* **Loop not running** (no live process with `--loop` on its command line in `MSC_DATA_DIR/controller.pid`): restart it with `MSC_KICK_RESTART_CMD` (default `scripts/run_loop.sh 0`).
+* **Heartbeat missing or stale** (`MSC_DATA_DIR/heartbeat.json` absent, or older than `MSC_KICK_STALE_S`, default 720 s = 12 minutes; the loop rewrites it every 15 s while idle): run one cycle now with `--once --note "kick: ..."`, under a hard timeout of `MSC_KICK_TIMEOUT_S` (default 420 s = 7 minutes). Because `--once` uses the loop's cycle lock, it cannot overlap a loop cycle.
 * **Otherwise:** nothing.
 
-It prints one status line (`ok`, `restarted`, `ran-cycle` or `error`) and exits 1 on error. A second copy started while one is running exits at once. After a kick cycle, the loop skips its own cycle if a cycle finished less than `skip_recent_s` ago (default 300 s, env `MSC_SKIP_RECENT_S`, capped at half the interval) and runs one interval after the kick cycle instead, so two cycles never run back to back.
+It prints one status line (`ok`, `restarted`, `ran-cycle` or `error`, with the reason, for example `no heartbeat` or the cycle's error) and exits 1 on error. A second copy started while one is running exits at once. After a kick cycle, the loop skips its own cycle if a cycle finished less than `skip_recent_s` ago and runs one interval after the kick cycle instead, so two cycles never run back to back.
+
+**Timeout rule:** `MSC_KICK_TIMEOUT_S` must be greater than the cycle watchdog (`cycle_watchdog_s`, 360 s) plus 10 s, the time the controller allows the cloud client to exit (5 s after SIGTERM, then 5 s after SIGKILL). That lets a hung cycle hit its own watchdog and log the error before the outer timeout kills it. `kick.sh` refuses to run if the timeout is too small. If you raise `cycle_watchdog_s`, set `MSC_KICK_WATCHDOG_S` to the same value and raise `MSC_KICK_TIMEOUT_S` with it.
 
 | Setting | Default | Where |
 |---|---|---|
 | Kick interval | 10 min | Your cron line or systemd timer |
 | `MSC_KICK_STALE_S` | 720 | Environment or `.env` (read by `scripts/kick.sh`) |
-| `MSC_KICK_TIMEOUT_S` | 360 | Environment or `.env` |
-| `skip_recent_s` / `MSC_SKIP_RECENT_S` | 300 | `[controller]` in the config file, or environment |
+| `MSC_KICK_TIMEOUT_S` | 420 | Environment or `.env`; must exceed `MSC_KICK_WATCHDOG_S` + 10 |
+| `MSC_KICK_WATCHDOG_S` | 360 | Environment or `.env`; keep equal to `cycle_watchdog_s` |
+| `MSC_KICK_RESTART_CMD` | `scripts/run_loop.sh 0` | Environment or `.env` |
+| `MSC_KICK_PYTHON` | `python3` from `PATH` | Environment or `.env` |
+| `skip_recent_s` / `MSC_SKIP_RECENT_S` | 300 | `[controller]` in the config file, or environment; clamped to half of `interval_s` at load |
 
-`kick.sh` reads credentials and `MSC_*` settings from the environment or `./.env`, like `run_loop.sh`, so the restarted loop can re-log in on its own. It needs `flock` and `timeout` (util-linux and coreutils on Linux).
+`kick.sh` reads credentials and `MSC_*` settings from the environment or `./.env`, like `run_loop.sh`, so a restarted loop can re-log in on its own. It needs `flock` and `timeout` (util-linux and coreutils on Linux).
 
-cron (`crontab -e`), every 10 minutes:
+**cron** (`crontab -e`), every 10 minutes. cron runs with a minimal `PATH`, so put your virtualenv first; both `kick.sh` and `run_loop.sh` then use its `python3`:
 
 ```cron
-*/10 * * * * /path/to/mitsubishi-mini-split-controller/scripts/kick.sh >> /path/to/mitsubishi-mini-split-controller/var/kick.log 2>&1
+*/10 * * * * PATH=/path/to/mitsubishi-mini-split-controller/.venv/bin:/usr/bin:/bin /path/to/mitsubishi-mini-split-controller/scripts/kick.sh >> /path/to/mitsubishi-mini-split-controller/var/kick.log 2>&1
 ```
 
-systemd user timer, in `~/.config/systemd/user/`:
+Add an `@reboot` line that runs `scripts/run_loop.sh` the same way if cron also starts the loop at boot.
+
+**systemd** (user units in `~/.config/systemd/user/`): run the loop as its own service with `Restart=always`, and let a timer run `kick.sh`, which restarts that service instead of starting a loop of its own. Stopping the service stops the loop.
+
+```ini
+# minisplit-loop.service
+[Unit]
+Description=Mini-split controller loop
+After=network-online.target
+
+[Service]
+WorkingDirectory=/path/to/mitsubishi-mini-split-controller
+EnvironmentFile=-/path/to/mitsubishi-mini-split-controller/.env
+Environment=PYTHONPATH=src
+ExecStart=/path/to/mitsubishi-mini-split-controller/.venv/bin/python -u -m minisplit_controller --loop
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
 
 ```ini
 # minisplit-kick.service
@@ -189,9 +214,9 @@ Description=Mini-split controller kick
 
 [Service]
 Type=oneshot
+Environment=PATH=/path/to/mitsubishi-mini-split-controller/.venv/bin:/usr/bin:/bin
+Environment="MSC_KICK_RESTART_CMD=systemctl --user restart minisplit-loop.service"
 ExecStart=/path/to/mitsubishi-mini-split-controller/scripts/kick.sh
-# Keep a loop that kick.sh restarts alive after this oneshot exits
-KillMode=process
 ```
 
 ```ini
@@ -209,11 +234,12 @@ WantedBy=timers.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now minisplit-kick.timer
-loginctl enable-linger "$USER"     # keep user timers running when you are logged out
+systemctl --user enable --now minisplit-loop.service minisplit-kick.timer
+loginctl enable-linger "$USER"     # keep user services running when you are logged out
+systemctl --user stop minisplit-kick.timer minisplit-loop.service   # stop both (timer first, or the kick restarts the loop)
 ```
 
-Without `KillMode=process`, systemd would stop a loop that `kick.sh` restarted as soon as the oneshot service finishes.
+With systemd, use `systemctl --user stop` rather than `scripts/restore.sh` to stop the loop, then run `scripts/restore.sh` to put the unit back on stock settings.
 
 ### Log format
 
@@ -274,7 +300,7 @@ Why: staging keeps the unit quiet when the room is close and only pushes hard wh
 
 **Fallback cool table** (`cool_table`): used when the outdoor reading is missing or older than 2 hours (or `adaptive_cool = false`). Tp ≤ 70.5 → 78, ≤ 71.0 → 77, ≤ 71.5 → 76, ≤ 72.0 → 75, ≤ 72.5 → 74, else 73. These are the adaptive offsets applied around a fixed 72.0°F target, so with no outdoor data the controller behaves like the adaptive table on a mild day, but never below 73. Why: cooling exists only to take the edge off solar gain, so the setpoint backs off quickly as the room comes down rather than chasing 70°F and swinging the room cold. Without outdoor data the controller cannot tell a cold day from a hot one, so it keeps the conservative 73 floor.
 
-**Rate limits** (`step_min = 15`, `cool_big_err_f = 1.5`, `cool_big_step = 2`, `cool_fallback_target_f = 72.0`): the risky direction (raising heat, lowering cool) moves at most once per 15 minutes; the safe direction moves at once. Heat rises 1°F per step. Cool drops 1°F per step, or 2°F when Tp is more than 1.5°F over the cool target (72.0°F when there is no fresh outdoor reading), and never past the setpoint the table asks for. Why: 15 minutes is roughly how long the room takes to show the effect of a change, so faster steps would stack up before they could be measured. The 2°F step is for the case where the room is clearly hot and 1°F per 15 minutes would take an hour to reach the setpoint the table already asks for.
+**Rate limits** (`step_min = 15`, `cool_big_err_f = 1.5`, `cool_big_step = 2`, `cool_fallback_target_f = 72.0`): the risky direction (raising heat, lowering cool) moves at most once per 15 minutes; the safe direction moves at once. Heat rises 1°F per step. Cool drops 1°F per step, or 2°F when Tp is more than 1.5°F over the cool target (72.0°F when there is no fresh outdoor reading), and never past the setpoint the table asks for. Why: 15 minutes is roughly how long the room takes to show the effect of a change, so faster steps would stack up before they could be measured. The 2°F step is for the case where the room is clearly hot and 1°F per 15 minutes would take an hour to reach the setpoint the table already asks for. `cool_fallback_target_f` (used only for this step size) and the fan staging's `fan_cool_target_default_f` are independent settings that both default to 72.0°F; changing one does not change the other.
 
 **Trim limits** (`trim_every_h = 3`, `trim_deadband_f = 0.4`, `trim_min = -1`, `trim_max = 2`): every 3 hours, if at least 2.5 hours of readings exist and the mean is more than 0.4°F off target, shift the table by 1°F. Why: 3 hours is long enough to average out a heating cycle, the deadband keeps it from hunting, and the asymmetric limits allow more correction on cold nights (heat loss) than on mild days, where a lower setpoint risks underheating.
 

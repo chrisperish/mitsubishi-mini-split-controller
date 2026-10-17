@@ -292,11 +292,12 @@ class Controller:
             dev = self.client.status()
         except Exception as err:  # noqa: BLE001
             msg = f"error: status failed: {err}"[:300]
+            row_msg = f"{gap_note}; {msg}" if gap_note else msg
             ra = retry_after(str(err))
             if ra and not dry_run:
                 state["backoff_until"] = self.clock() + ra
                 self.save_state(state)
-            self._log(dry_run, {"timestamp_pt": fmt_pt(ts), "event": "Error", "action": msg})
+            self._log(dry_run, {"timestamp_pt": fmt_pt(ts), "event": "Error", "action": row_msg})
             return {"action": msg}
 
         # Never fight a person: offline or switched off means hands off.
@@ -385,6 +386,12 @@ class Controller:
         except (OSError, ValueError, AttributeError):
             return None
 
+    def skip_until(self, now):
+        """Loop helper: if another cycle (kick.sh, --once) finished less than skip_recent_s ago (capped at
+        interval_s / 2), the time to run the next loop cycle instead; else None."""
+        interval = self.s.interval_s
+        return deferred_due(self.last_ok_ts(), now, interval, min(self.s.skip_recent_s, interval / 2))
+
     def once(self, note=None):
         """One cycle with the loop's cycle lock and watchdog. Returns an exit code: 0 ok (or skipped
         because another cycle holds the lock), 2 error. Used by scripts/kick.sh."""
@@ -402,7 +409,7 @@ class Controller:
             print(f"{fmt_pt(now_pt(self.tz))} cycle crashed: {err}", flush=True)
             try:
                 self.append_row({"timestamp_pt": fmt_pt(now_pt(self.tz)), "event": "Error",
-                                 "action": f"error: {err}"[:300]})
+                                 "action": (f"{note}; " if note else "") + f"error: {err}"[:300]})
             except Exception:  # noqa: BLE001
                 pass
             return 2
@@ -410,6 +417,8 @@ class Controller:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old[0])
             signal.signal(signal.SIGTERM, old[1])
+        if "row" not in r:   # skipped or early error: _cycle printed nothing, so say why (kick.sh reads it)
+            print(f"{fmt_pt(now_pt(self.tz))} {r.get('action')}", flush=True)
         if str(r.get("action", "")).startswith("error") or (r.get("row") or {}).get("event") == "Error":
             return 2
         return 0
@@ -446,7 +455,7 @@ class Controller:
                     self.write_heartbeat(next_cycle=iso(due), **last)
                     time.sleep(max(0.5, min(chunk, due - now)))
                     continue
-                d2 = deferred_due(self.last_ok_ts(), now, interval, min(self.s.skip_recent_s, interval / 2))
+                d2 = self.skip_until(now)
                 if d2 is not None:   # an outside cycle (scripts/kick.sh, --once) just ran: keep spacing
                     due = d2
                     continue
