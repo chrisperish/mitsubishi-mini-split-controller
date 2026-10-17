@@ -8,6 +8,7 @@ REGIME_MIN_S = Tuning().regime_min_h * 3600
 
 def st(**kw):
     s = default_state(0)
+    s["fan_stages_v"] = 2
     s.update(kw)
     return s
 
@@ -51,8 +52,8 @@ def test_solar_gain_rule_switches_to_cool_after_1h_dwell():
     s = st(regime_since=0, history=hot, last_ok_ts=50 * M, outdoor_f=58, outdoor_ts=55 * M)
     d, s2, _, _ = decide(73.2, s, 61 * M)
     assert s2["regime"] == "cool"
-    # adaptive: 58F outdoor -> target 70.86, Tp 73.2 is +2.34 -> 71 (floor 71); fan e 2.34 -> powerful
-    assert d == {"mode": "cool", "heat_setpoint": 66, "cool_setpoint": 71, "fan": "powerful"}
+    # 58F outdoor -> target 70.42, floor 69; u = 70.42 - 1.5 * 2.78 -> floor 69; fan e 2.78 -> superPowerful
+    assert d == {"mode": "cool", "heat_setpoint": 66, "cool_setpoint": 69, "fan": "superPowerful"}
     short = [[t * M, 73.5] for t in (45, 50, 55)]       # held only 15 min
     assert decide(73.5, st(regime_since=-REGIME_MIN_S, history=short, last_ok_ts=55 * M), 60 * M)[1]["regime"] == "heat"
     stale = st(regime_since=-REGIME_MIN_S, history=[[t * M, 73.5] for t in (30, 40, 50)], last_ok_ts=20 * M)
@@ -63,7 +64,7 @@ def test_first_cool_sp_skips_step_and_cool_to_heat_keeps_3h_dwell():
     hist = [[t * M, 74.0] for t in (30, 40, 50)]
     s = st(regime_since=-REGIME_MIN_S, history=hist, last_ok_ts=50 * M, cool_sp=78, cool_sp_changed_at=55 * M)
     d, s2, _, _ = decide(74.0, s, 60 * M, live={"mode": "cool", "cool_setpoint": 78})
-    assert s2["regime"] == "cool" and d["cool_setpoint"] == 73
+    assert s2["regime"] == "cool" and d["cool_setpoint"] == 71   # no outdoor: 72 - 3 = 69 -> floor 71, no step
     cold = [[t * M, 67.5] for t in range(0, 60, 10)]
     assert decide(67.5, st(regime="cool", regime_since=-1.5 * 3600, history=cold, last_ok_ts=50 * M),
                   60 * M)[1]["regime"] == "cool"
@@ -75,7 +76,7 @@ def test_cool_lower_limited_raise_immediate():
     s = st(regime="cool", regime_since=0, cool_sp=78, cool_sp_changed_at=0)
     d, s, _, _ = decide(74.0, s, 5 * M); assert d["cool_setpoint"] == 78
     d, s, _, _ = decide(74.0, s, 16 * M); assert d["cool_setpoint"] == 76   # e 2.0 vs fallback 72 > 1.5: 2F step
-    d, s, _, _ = decide(70.0, s, 17 * M); assert d["cool_setpoint"] == 78
+    d, s, _, _ = decide(68.0, s, 17 * M); assert d["cool_setpoint"] == 78   # u 72 + 1.5 * 4 = 78: raise now
 
 
 def test_trim_steps_and_limits():
@@ -101,8 +102,8 @@ def test_diff_and_schedule():
 
 
 def test_cool_setpoint_is_clamped():
-    t = Tuning(cool_floor=74, cool_max=76)
+    t = Tuning(cool_floor_below_f=0.0, cool_max=76)   # no outdoor: target 72 -> floor 72
     d, *_ = decide(80.0, st(regime="cool", regime_since=0), 0, t=t)
-    assert d["cool_setpoint"] == 74
+    assert d["cool_setpoint"] == 72
     d, *_ = decide(60.0, st(regime="cool", regime_since=0), 0, t=t)
     assert d["cool_setpoint"] == 76

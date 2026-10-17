@@ -323,8 +323,9 @@ class Controller:
             return {"action": msg}
 
         o_note = self.update_outdoor(state)
-        desired, new_state, info, events = decide(room_f, state, self.clock(), dev, self.t)
-        notes = [n for n in (gap_note, t_note, o_note, info.get("blocked")) if n]
+        desired, new_state, info, events = decide(room_f, state, self.clock(), dev, self.t,
+                                                  unit_f=unit_f, source=source)
+        notes = [n for n in (gap_note, t_note, o_note, info.get("blocked"), info.get("diff_alert")) if n]
         if info["g"] is not None and info["g"] > self.t.gap_max_min:
             notes.append(f"gap {info['g']:.0f} min > {self.t.gap_max_min:.0f}: no slope, regime change or trim")
         head = info_text(info) + "; " + ("; ".join(notes) + "; " if notes else "")

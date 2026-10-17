@@ -32,7 +32,9 @@ def test_simulation_shape_matches_spec():
     assert set(a.heat_sp) == {70} and set(a.cool_sp) == {72}  # fair run: aimed at the band
     ref = simulate.stock_auto(heat=67, cool=73)                # restore.sh defaults, reference only
     assert simulate.summarize(ref)["below"] > 0.5
-    assert 73.8 <= max(c.true) <= 74.8                        # afternoon peak calibrated near 74.3F
+    # The sun is calibrated to a real 74.3F afternoon peak recorded under an earlier, milder cool design;
+    # with the current design the simulated controller peaks near 73.7F.
+    assert 73.4 <= max(c.true) <= 74.8
     assert set(c.heat_sp) <= set(range(66, 72))
     assert all(y - x <= 1 for x, y in zip(c.heat_sp, c.heat_sp[1:]))   # raises are 1F at a time
     sa, sc = simulate.summarize(a), simulate.summarize(c)
