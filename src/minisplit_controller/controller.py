@@ -1,7 +1,7 @@
 """I/O side of the controller: talk to the unit, keep state, write the log, run the loop.
 
 Usage:
-  python -m minisplit_controller --once [--dry-run]   run one cycle
+  python -m minisplit_controller --once [--dry-run] [--note TEXT]   run one cycle (exit 2 on error)
   python -m minisplit_controller --loop               run forever (every MSC_INTERVAL_S, default 600 s)
 
 The unit is reached through the bundled Comfort cloud client (client/mitsubishi.py), run as a
@@ -24,7 +24,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from . import config as config_mod
-from .logic import decide, default_state, info_text, needed_changes, next_due
+from .logic import decide, default_state, deferred_due, info_text, needed_changes, next_due
 
 DEFAULT_TZ = ZoneInfo("America/Los_Angeles")   # override with MSC_TIMEZONE / [controller] timezone
 UTC = ZoneInfo("UTC")
@@ -292,11 +292,12 @@ class Controller:
             dev = self.client.status()
         except Exception as err:  # noqa: BLE001
             msg = f"error: status failed: {err}"[:300]
+            row_msg = f"{gap_note}; {msg}" if gap_note else msg
             ra = retry_after(str(err))
             if ra and not dry_run:
                 state["backoff_until"] = self.clock() + ra
                 self.save_state(state)
-            self._log(dry_run, {"timestamp_pt": fmt_pt(ts), "event": "Error", "action": msg})
+            self._log(dry_run, {"timestamp_pt": fmt_pt(ts), "event": "Error", "action": row_msg})
             return {"action": msg}
 
         # Never fight a person: offline or switched off means hands off.
@@ -322,8 +323,9 @@ class Controller:
             return {"action": msg}
 
         o_note = self.update_outdoor(state)
-        desired, new_state, info, events = decide(room_f, state, self.clock(), dev, self.t)
-        notes = [n for n in (gap_note, t_note, o_note, info.get("blocked")) if n]
+        desired, new_state, info, events = decide(room_f, state, self.clock(), dev, self.t,
+                                                  unit_f=unit_f, source=source)
+        notes = [n for n in (gap_note, t_note, o_note, info.get("blocked"), info.get("diff_alert")) if n]
         if info["g"] is not None and info["g"] > self.t.gap_max_min:
             notes.append(f"gap {info['g']:.0f} min > {self.t.gap_max_min:.0f}: no slope, regime change or trim")
         head = info_text(info) + "; " + ("; ".join(notes) + "; " if notes else "")
@@ -378,6 +380,50 @@ class Controller:
         tmp.write_text(json.dumps(hb, indent=2))
         os.replace(tmp, self.heartbeat)
 
+    def last_ok_ts(self):
+        """Time of the last cycle that produced a decision (from the state file), or None."""
+        try:
+            return json.loads(self.state_file.read_text()).get("last_ok_ts")
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def skip_until(self, now):
+        """Loop helper: if another cycle (kick.sh, --once) finished less than skip_recent_s ago (capped at
+        interval_s / 2), the time to run the next loop cycle instead; else None."""
+        interval = self.s.interval_s
+        return deferred_due(self.last_ok_ts(), now, interval, min(self.s.skip_recent_s, interval / 2))
+
+    def once(self, note=None):
+        """One cycle with the loop's cycle lock and watchdog. Returns an exit code: 0 ok (or skipped
+        because another cycle holds the lock), 2 error. Used by scripts/kick.sh."""
+        def _watchdog(*_):
+            raise TimeoutError(f"cycle exceeded {self.s.cycle_watchdog_s}s watchdog")
+
+        def _stop(*_):
+            raise SystemExit(2)
+
+        old = signal.signal(signal.SIGALRM, _watchdog), signal.signal(signal.SIGTERM, _stop)
+        signal.alarm(self.s.cycle_watchdog_s)
+        try:
+            r = self.cycle(gap_note=note)
+        except Exception as err:  # noqa: BLE001
+            print(f"{fmt_pt(now_pt(self.tz))} cycle crashed: {err}", flush=True)
+            try:
+                self.append_row({"timestamp_pt": fmt_pt(now_pt(self.tz)), "event": "Error",
+                                 "action": (f"{note}; " if note else "") + f"error: {err}"[:300]})
+            except Exception:  # noqa: BLE001
+                pass
+            return 2
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old[0])
+            signal.signal(signal.SIGTERM, old[1])
+        if "row" not in r:   # skipped or early error: _cycle printed nothing, so say why (kick.sh reads it)
+            print(f"{fmt_pt(now_pt(self.tz))} {r.get('action')}", flush=True)
+        if str(r.get("action", "")).startswith("error") or (r.get("row") or {}).get("event") == "Error":
+            return 2
+        return 0
+
     def loop(self, start_delay=0, chunk=15):
         """Run forever. Sleeps in short chunks against the wall clock so it survives suspend/resume,
         writes a heartbeat every chunk, and caps each cycle with a SIGALRM watchdog."""
@@ -409,6 +455,10 @@ class Controller:
                 if now < due:
                     self.write_heartbeat(next_cycle=iso(due), **last)
                     time.sleep(max(0.5, min(chunk, due - now)))
+                    continue
+                d2 = self.skip_until(now)
+                if d2 is not None:   # an outside cycle (scripts/kick.sh, --once) just ran: keep spacing
+                    due = d2
                     continue
                 gap_note = None
                 if now - due > interval:
@@ -442,6 +492,7 @@ def main(argv=None):
     g.add_argument("--loop", action="store_true", help="run forever")
     ap.add_argument("--dry-run", action="store_true", help="with --once: decide and print, change nothing")
     ap.add_argument("--config", help="TOML config file (default: $MSC_CONFIG or ./config.toml)")
+    ap.add_argument("--note", help="with --once: note added to the cycle's log row (used by scripts/kick.sh)")
     ap.add_argument("--start-delay", type=int, default=0, help="seconds to wait before the first loop cycle")
     a = ap.parse_args(argv)
     settings = config_mod.load(a.config)
@@ -449,11 +500,13 @@ def main(argv=None):
         sys.exit("set MSC_DEVICE (unit serial or name) or [controller] device in the config file")
     c = Controller(settings)
     if a.loop:
-        if a.dry_run:
-            sys.exit("--dry-run only with --once")
+        if a.dry_run or a.note:
+            sys.exit("--dry-run and --note only with --once")
         c.loop(a.start_delay)
+    elif a.dry_run:
+        c.cycle(dry_run=True)
     else:
-        c.cycle(dry_run=a.dry_run)
+        sys.exit(c.once(a.note))
 
 
 if __name__ == "__main__":

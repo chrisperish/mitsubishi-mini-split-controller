@@ -11,6 +11,7 @@ sensor_name = ""       # optional wireless sensor name if it is not linked to th
 # longitude = 0.0      # (env: MSC_LONGITUDE)
 interval_s = 600       # seconds between cycles (env: MSC_INTERVAL_S)
 timezone = "America/Los_Angeles"   # IANA zone for log timestamps (env: MSC_TIMEZONE)
+skip_recent_s = 300    # loop skips its cycle if a cycle (e.g. from scripts/kick.sh) ran this recently (env: MSC_SKIP_RECENT_S)
 
 [tuning]               # defaults shown; see README "Tuning"
 target_f = 70.0
@@ -21,7 +22,7 @@ heat_park = 66
 fan = "auto"           # used only when fan_staging = false
 # Fan staging: e = Tp - cool target (cool) or target_f - Tp (heat); first row with e <= x wins
 fan_staging = true
-fan_stages = [[0.3, "quiet"], [0.8, "low"], [1.5, "low"], [2.5, "powerful"], [inf, "superPowerful"]]
+fan_stages = [[0.3, "quiet"], [1.5, "low"], [2.5, "powerful"], [inf, "superPowerful"]]
 fan_down_hyst_f = 0.3         # step down only when e <= lower stage's threshold - this ...
 fan_down_cycles = 2           # ... on this many consecutive cycles
 fan_max_up = 2                # step up immediately, at most this many stages per cycle
@@ -47,17 +48,26 @@ trim_deadband_f = 0.4
 trim_min = -1
 trim_max = 2
 heat_table = [[70.6, 66], [70.0, 67], [69.4, 68], [68.8, 69], [68.2, 70]]   # Tp >= x -> heat SP; else heat_max
-cool_table = [[71.4, 78], [72.0, 77], [72.6, 76], [73.2, 75], [73.8, 74]]   # Tp <= x -> cool SP; else cool_floor
-cool_floor = 73        # lowest cool SP on warm days or without outdoor data
-# Outdoor-adaptive cooling: only with an outdoor reading <= outdoor_max_age_h old (needs latitude/longitude)
+# Cool target: outdoor-adaptive with an outdoor reading <= outdoor_max_age_h old (needs latitude/longitude)
 adaptive_cool = true
 cool_target_out_lo_f = 55.0   # outdoor at or below this -> cool target cool_target_lo_f
 cool_target_out_hi_f = 80.0   # outdoor at or above this -> cool target cool_target_hi_f (linear between)
-cool_target_lo_f = 70.5
+cool_target_lo_f = 70.0
 cool_target_hi_f = 73.5
-cool_offsets = [[-0.6, 78], [0.0, 77], [0.6, 76], [1.2, 75], [1.8, 74], [2.4, 73], [3.0, 72]]   # Tp <= target + x -> cool SP
-cool_offsets_else = 71
-cool_floor_table = [[68.0, 71]]   # outdoor < x -> lowest cool SP; else cool_floor
-cool_min = 71
-heat_to_cool_margin_f = 1.5   # heat -> cool entry = min(heat_to_cool_f, cool target + this)
+cool_fallback_target_f = 72.0 # cool target without a fresh outdoor reading
+heat_to_cool_margin_f = 1.5   # heat -> cool entry = min(heat_to_cool_f, adaptive target + this)
+# Cool setpoint: u = clamp(target + cool_trim - cool_gain * (Tp - target), ceil(target - cool_floor_below_f), cool_max)
+cool_gain = 1.5
+cool_floor_below_f = 1.5
 cool_max = 78
+cool_hyst_f = 0.75            # change the cool SP only when |u - current SP| >= this
+cool_big_err_f = 1.5          # cool drops are cool_big_step (not 1F) when Tp - cool target > this
+cool_big_step = 2
+cool_trim_band_f = 0.3        # cool trim: every trim_every_h, -1 above target + band, +1 below target - band
+cool_trim_min = -2
+cool_trim_max = 0
+# Unit-vs-sensor offset: log only, no control effect
+unit_diff_alpha = 0.3
+unit_diff_max_f = 3.0
+unit_diff_window_h = 6.0
+unit_diff_alert_f = 1.5

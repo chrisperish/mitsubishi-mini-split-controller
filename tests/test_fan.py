@@ -13,6 +13,7 @@ T = Tuning()
 
 def st(**kw):
     s = default_state(0)
+    s["fan_stages_v"] = 2
     s.update(kw)
     return s
 
@@ -22,44 +23,45 @@ def cool(**kw):
 
 
 def test_default_stages():
-    assert [sp for _, sp in T.fan_stages] == ["quiet", "low", "low", "powerful", "superPowerful"]
-    assert math.isinf(T.fan_stages[-1][0])
+    assert T.fan_stages[:3] == [(0.3, "quiet"), (1.5, "low"), (2.5, "powerful")]
+    assert T.fan_stages[3][1] == "superPowerful" and math.isinf(T.fan_stages[3][0])
 
 
 def test_raw_stages():
-    assert [fan_raw_stage(e, T) for e in (-1, 0.3, 0.31, 0.8, 1.5, 2.5, 2.6, 9)] == [0, 0, 1, 1, 2, 3, 4, 4]
+    assert [fan_raw_stage(e, T) for e in (-1, 0.3, 0.31, 0.8, 1.5, 2.5, 2.6, 9)] == [0, 0, 1, 1, 1, 2, 3, 3]
 
 
 def test_up_immediate_at_most_two():
     assert fan_stage(3.0, 0, 0, T) == (2, 0)
-    assert fan_stage(3.0, 2, 0, T) == (4, 0)
-    assert fan_stage(1.0, 1, 1, T) == (2, 0)
+    assert fan_stage(3.0, 1, 0, T) == (3, 0)
+    assert fan_stage(1.0, 0, 1, T) == (1, 0)
 
 
 def test_down_hysteresis():
-    assert fan_stage(1.3, 3, 0, T) == (3, 0)        # below 1.5 but not by 0.3
-    assert fan_stage(1.2, 3, 0, T) == (3, 1)        # 1st qualifying cycle
-    assert fan_stage(1.2, 3, 1, T) == (2, 0)        # 2nd: step down
-    assert fan_stage(1.3, 3, 1, T) == (3, 0)        # streak resets
-    assert fan_stage(0.0, 4, 1, T) == (0, 0)        # big drop goes straight to the stage
+    assert fan_stage(1.3, 2, 0, T) == (2, 0)        # below 1.5 but not by 0.3
+    assert fan_stage(1.2, 2, 0, T) == (2, 1)        # 1st qualifying cycle
+    assert fan_stage(1.2, 2, 1, T) == (1, 0)        # 2nd: step down powerful -> low
+    assert fan_stage(1.3, 2, 1, T) == (2, 0)        # streak resets
+    assert fan_stage(0.0, 3, 1, T) == (0, 0)        # big drop goes straight to the stage
+    assert fan_stage(0.1, 1, 1, T) == (1, 0) and fan_stage(0.0, 1, 1, T) == (0, 0)   # low -> quiet at e <= 0
 
 
 def test_error_definitions():
-    assert fan_error(73.0, "cool", 55, T) == pytest.approx(2.5)     # adaptive target 70.5
+    assert fan_error(73.0, "cool", 55, T) == pytest.approx(3.0)     # adaptive target 70.0
     assert fan_error(73.0, "cool", None, T) == pytest.approx(1.0)   # no outdoor reading: 72.0
     assert fan_error(69.0, "heat", 55, T) == pytest.approx(1.0)     # target_f 70 - Tp
 
 
 def test_decide_cool_and_gap_keeps_live():
-    d, s2, _, ev = decide(73.5, cool(last_ok_ts=50 * M, fan_stage=0), 60 * M)   # e 3.0 -> +2 max
-    assert d["fan"] == "low" and s2["fan_stage"] == 2 and any("fan stage 0 -> 2" in e for e in ev)
+    d, s2, _, ev = decide(73.5, cool(last_ok_ts=50 * M, fan_stage=0), 60 * M)   # e 3.5 -> raw 3, +2 max
+    assert d["fan"] == "powerful" and s2["fan_stage"] == 2 and any("fan stage 0 -> 2" in e for e in ev)
     d, s2, _, _ = decide(73.5, cool(last_ok_ts=10 * M, fan_stage=0), 60 * M, {"mode": "cool", "fan": "auto"})
     assert d["fan"] == "auto" and s2["fan_stage"] == 0                          # g 50 min > 30: hold
 
 
 def test_decide_heat_and_no_resend():
     d, s2, _, _ = decide(69.0, st(sp=70, sp_changed_at=0, last_ok_ts=50 * M, fan_stage=1), 60 * M)
-    assert d["fan"] == "low" and s2["fan_stage"] == 2
+    assert d["fan"] == "low" and s2["fan_stage"] == 1          # e 1.0 -> low
     assert "fan" not in needed_changes(dict(d), d)
     assert needed_changes(dict(d, fan="auto"), d)["fan"] == "low"
 

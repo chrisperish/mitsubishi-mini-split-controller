@@ -1,6 +1,6 @@
 # Mitsubishi Mini-Split Controller: an experimental alternative to Auto mode
 
-An unofficial, experimental Python controller for Mitsubishi mini-split heat pumps on Kumo Cloud and the Mitsubishi Comfort app. Instead of Auto mode's heat/cool changeover, it keeps the unit in heat, steers the setpoint toward 70°F from a 15-minute temperature prediction, and cools only when sun pushes the room to 73°F or more (as low as 72°F on cold days when outdoor data is configured).
+An unofficial, experimental Python controller for Mitsubishi mini-split heat pumps on Kumo Cloud and the Mitsubishi Comfort app. Instead of Auto mode's heat/cool changeover, it keeps the unit in heat, steers the setpoint toward 70°F from a 15-minute temperature prediction, and cools only when sun pushes the room to 73°F or more (as low as 71.5°F on cold days when outdoor data is configured).
 
 **Status: experimental.** It runs daily in the author's home but has not yet proven steadier than a simpler approach there. Treat it as a starting point and check your own log.
 
@@ -12,11 +12,11 @@ It talks to the same cloud backend as the Mitsubishi Comfort app (Kumo Cloud v3)
 
 ## The problem
 
-Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint and only changes mode when the room crosses the other one. A 67/73 Auto (the defaults `scripts/restore.sh` puts back) is not trying to hold a 69 to 71°F band at all: in the same simulation it spends 73% of the day below 69°F. A fair comparison sets Auto to 70/72, aimed at the band, and that is what Chart 1 shows. In that simulation both hold the band about equally (75% for Stock Auto, 77% for the controller); the difference is cooling. Stock Auto switches to cooling as soon as afternoon sun takes the room past 72°F and cools for 4.2 hours, while the controller stays in heat until the room holds 73°F and cools for 2.7 hours. The trade-off is a warmer afternoon: the controller peaks near 74.3°F against about 72.9°F for Stock Auto.
+Mitsubishi's Auto mode keeps a heat setpoint and a cool setpoint and only changes mode when the room crosses the other one. A 67/73 Auto (the defaults `scripts/restore.sh` puts back) is not trying to hold a 69 to 71°F band at all: in the same simulation it spends 73% of the day below 69°F. A fair comparison sets Auto to 70/72, aimed at the band, and that is what Chart 1 shows. In that simulation both hold the band about equally (75% for Stock Auto, 77% for the controller); the difference is cooling. Stock Auto switches to cooling as soon as afternoon sun takes the room past 72°F and cools for 4.2 hours, while the controller stays in heat until the room holds 73°F and cools for 2.7 hours. The trade-off is a warmer afternoon: the controller peaks near 73.7°F against about 72.9°F for Stock Auto.
 
 ## How it works
 
-The controller stays in heat and steers the heat setpoint between 66 and 71°F from a predicted room temperature 15 minutes ahead (Tp = current temp + 0.25 h × slope). It lowers the setpoint right away when Tp says the room is heading up, and raises it at most 1°F per 15 minutes. Every 3 hours it compares the time-weighted mean with the 70°F target and trims the whole table by 1°F if the mean drifted more than 0.4°F. It only cools when the room holds at or above 73°F for 20 minutes, which in practice means solar gain. With a fresh outdoor reading (at most 2 hours old) that entry point drops to the cool target + 1.5°F when that is lower, and the cool setpoint follows an outdoor-adaptive cool target: 70.5°F when it is 55°F or colder outside, rising linearly to 73.5°F at 80°F or warmer. Without outdoor data it uses the fixed cool table. The fan is staged from how far the room is from where it should be (quiet up to superPowerful) instead of sitting on auto.
+The controller stays in heat and steers the heat setpoint between 66 and 71°F from a predicted room temperature 15 minutes ahead (Tp = current temp + 0.25 h × slope). It lowers the setpoint right away when Tp says the room is heading up, and raises it at most 1°F per 15 minutes. Every 3 hours it compares the time-weighted mean with the 70°F target and trims the whole table by 1°F if the mean drifted more than 0.4°F. It only cools when the room holds at or above 73°F for 20 minutes, which in practice means solar gain. With a fresh outdoor reading (at most 2 hours old) that entry point drops to the cool target + 1.5°F when that is lower. In cool, the room target follows outdoor temperature: 70.0°F when it is 55°F or colder outside, rising linearly to 73.5°F at 80°F or warmer (72.0°F without outdoor data). The cool setpoint comes from a formula: u = target + cool trim − 1.5 × (Tp − target), kept between a floor of target − 1.5 rounded up and 78, and rounded to the nearest degree. It only changes when u is at least 0.75°F away from the current setpoint; raises happen at once, drops at most once per 15 minutes, by 2°F when Tp is more than 1.5°F over the target. A slow cool-only trim (−2 to 0) corrects a room that keeps settling above the target. The fan is staged from how far the room is from where it should be (quiet up to superPowerful) instead of sitting on auto.
 
 It runs every 10 minutes, sends only the settings that differ from the unit's live state, never touches the vane, never turns a switched-off unit back on, and writes one row per cycle to a CSV log.
 
@@ -25,7 +25,7 @@ flowchart TD
     A["Every 10 min"] --> B{"Backoff / read error / offline / off?"}
     B -- yes --> Z["Log, change nothing"]
     B -- no --> C["T, g, slope S, Tp = T + 0.25×S"]
-    C --> O["Outdoor ≤ 2 h old?<br>yes: cool target 70.5 to 73.5 from outdoor<br>no: no target, h2c = 73"]
+    C --> O["Outdoor ≤ 2 h old?<br>yes: cool target 70.0 to 73.5 from outdoor<br>no: cool target 72.0, h2c = 73"]
     O --> D{"g ≤ 30?"}
     D -- no --> H
     D -- yes --> E{"Regime?"}
@@ -38,12 +38,9 @@ flowchart TD
     FC --> H
     GH --> H
     H{"Regime"} -- heat --> HH["Heat SP 66 to 71 from Tp table + trim<br>lower now, raise slowly"]
-    H -- cool --> CC{"Cool target?"}
-    CC -- yes --> CA["Cool SP 71 to 78 from Tp minus target<br>never below the outdoor floor (71/73)"]
-    CC -- no --> CF["Cool SP 73 to 78 from fixed Tp table"]
+    H -- cool --> CA["u = target + cool trim − 1.5×(Tp − target)<br>kept within ceil(target − 1.5) to 78<br>cool SP = u rounded, changed only when 0.75 away<br>raise now, drop 1 or 2 per 15 min"]
     HH --> S["Stage fan from error, send only differences, log"]
     CA --> S
-    CF --> S
 ```
 
 T is the wireless sensor reading if it is at most 20 minutes old, else the unit's own reading. g is the number of minutes since the last good reading; after a gap longer than 30 minutes the controller still follows T but skips the slope, regime switches and trim.
@@ -56,7 +53,7 @@ T is the wireless sensor reading if it is at most 20 minutes old, else the unit'
 
 Charts are a simulation that shows the behavior. Your results depend on your room, unit and climate.
 
-The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated to the 74.3°F afternoon peak in the author's real log. The simulated controller gets no outdoor reading, so it runs on the fixed cool table and the 73°F entry point, exactly as an install without `MSC_LATITUDE` / `MSC_LONGITUDE` would. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
+The simulation (`scripts/simulate.py`) runs a simple one-room thermal model for 24 hours under the same outdoor temperature and sun curves twice. Both runs use the same modulating indoor unit (a PI loop with a minimum output that cycles off past its setpoint): once with Stock Auto at 70/72°F and its own changeover, and once driven by this controller's real decision code. Chart 3 adds a 67/73 Auto run for reference; it is not aimed at the band. The afternoon sun is calibrated to the 74.3°F afternoon peak in the author's real log, recorded under an earlier cool design; with the current cool formula the simulated peak is about 73.7°F. The simulated controller gets no outdoor reading, so it runs on the 72.0°F fallback cool target (floor 71) and the 73°F entry point, exactly as an install without `MSC_LATITUDE` / `MSC_LONGITUDE` would. The dynamics use no random numbers; the seed (42) only adds display noise, so `python scripts/make_charts.py` redraws identical charts every time.
 
 Overnight the controller toggles its heat setpoint between 69 and 70°F about every 30 minutes, because the predicted temperature sits right on a table threshold. The unit only sees a 1°F nudge each time, so the room stays steady.
 
@@ -131,7 +128,7 @@ python3 client/mitsubishi.py status     # find your unit's serial or name
 | `MITSUBISHI_COMFORT_EMAIL`, `MITSUBISHI_COMFORT_PASSWORD` | yes | Comfort app account; the password also enables automatic re-login when the refresh token expires |
 | `MSC_DEVICE` | yes | Unit serial or name |
 | `MSC_SENSOR_NAME` | no | Wireless sensor name, if the sensor is not linked to the unit |
-| `MSC_LATITUDE`, `MSC_LONGITUDE` | no | Enables the outdoor temperature gate and the outdoor-adaptive cool target (Open-Meteo, no key needed). Without them the 73°F rule and the fixed cool table still work |
+| `MSC_LATITUDE`, `MSC_LONGITUDE` | no | Enables the outdoor temperature gate and the outdoor-adaptive cool target (Open-Meteo, no key needed). Without them the 73°F rule and the cool formula (on the 72.0°F fallback target) still work |
 | `MSC_DATA_DIR` | no | Where `state.json`, `log.csv` and the heartbeat live (default `./var`) |
 | `MSC_INTERVAL_S` | no | Seconds between cycles (default 600) |
 | `MSC_TIMEZONE` | no | IANA zone for log timestamps (default `America/Los_Angeles`, labelled `PT`; other zones are labelled with their key, e.g. `UTC`) |
@@ -151,7 +148,95 @@ scripts/run_loop.sh                            # detached loop, every 10 min, pi
 scripts/restore.sh                             # stop the loop and put the unit back on stock Auto 67/73
 ```
 
-The loop sleeps in short chunks against the wall clock (it survives suspend and resume), caps each cycle with a watchdog, and logs a gap note when a cycle runs late. To start it at boot, use a systemd user service or `@reboot` cron entry that runs `scripts/run_loop.sh`.
+The loop sleeps in short chunks against the wall clock (it survives suspend and resume), caps each cycle with a watchdog, and logs a gap note when a cycle runs late. To start it at boot, use the systemd loop service or the `@reboot` cron entry in [Pause resilience](#pause-resilience).
+
+`--once` takes the same cycle lock as the loop, so it never overlaps a loop cycle (if a cycle is already running it prints `another cycle is running; skipped`, logs nothing and exits 0). `--once --note TEXT` adds TEXT to the cycle's log row, including an Error row. When a cycle is skipped or fails before it decides anything, `--once` prints the reason. It exits 2 when the cycle ends in an error (status read failed, command failed, crash or watchdog), else 0.
+
+### Pause resilience
+
+If the machine running the loop is paused, suspended or overloaded, cycles can be missed or the loop can die. `scripts/kick.sh` is a backup you run on a schedule (every 10 minutes is a good default). Each run does one of three things:
+
+* **Loop not running** (no live process with `--loop` on its command line in `MSC_DATA_DIR/controller.pid`): restart it with `MSC_KICK_RESTART_CMD` (default `scripts/run_loop.sh 0`).
+* **Heartbeat missing or stale** (`MSC_DATA_DIR/heartbeat.json` absent, or older than `MSC_KICK_STALE_S`, default 720 s = 12 minutes; the loop rewrites it every 15 s while idle): run one cycle now with `--once --note "kick: ..."`, under a hard timeout of `MSC_KICK_TIMEOUT_S` (default 420 s = 7 minutes). Because `--once` uses the loop's cycle lock, it cannot overlap a loop cycle.
+* **Otherwise:** nothing.
+
+It prints one status line (`ok`, `restarted`, `ran-cycle` or `error`, with the reason, for example `no heartbeat` or the cycle's error) and exits 1 on error. A second copy started while one is running exits at once. After a kick cycle, the loop skips its own cycle if a cycle finished less than `skip_recent_s` ago and runs one interval after the kick cycle instead, so two cycles never run back to back.
+
+**Timeout rule:** `MSC_KICK_TIMEOUT_S` must be greater than the cycle watchdog (`cycle_watchdog_s`, 360 s) plus 10 s, the time the controller allows the cloud client to exit (5 s after SIGTERM, then 5 s after SIGKILL). That lets a hung cycle hit its own watchdog and log the error before the outer timeout kills it. `kick.sh` refuses to run if the timeout is too small. If you raise `cycle_watchdog_s`, set `MSC_KICK_WATCHDOG_S` to the same value and raise `MSC_KICK_TIMEOUT_S` with it.
+
+| Setting | Default | Where |
+|---|---|---|
+| Kick interval | 10 min | Your cron line or systemd timer |
+| `MSC_KICK_STALE_S` | 720 | Environment or `.env` (read by `scripts/kick.sh`) |
+| `MSC_KICK_TIMEOUT_S` | 420 | Environment or `.env`; must exceed `MSC_KICK_WATCHDOG_S` + 10 |
+| `MSC_KICK_WATCHDOG_S` | 360 | Environment or `.env`; keep equal to `cycle_watchdog_s` |
+| `MSC_KICK_RESTART_CMD` | `scripts/run_loop.sh 0` | Environment or `.env` |
+| `MSC_KICK_PYTHON` | `python3` from `PATH` | Environment or `.env` |
+| `skip_recent_s` / `MSC_SKIP_RECENT_S` | 300 | `[controller]` in the config file, or environment; clamped to half of `interval_s` at load |
+
+`kick.sh` reads credentials and `MSC_*` settings from the environment or `./.env`, like `run_loop.sh`, so a restarted loop can re-log in on its own. It needs `flock` and `timeout` (util-linux and coreutils on Linux).
+
+**cron** (`crontab -e`), every 10 minutes. cron runs with a minimal `PATH`, so put your virtualenv first; both `kick.sh` and `run_loop.sh` then use its `python3`:
+
+```cron
+*/10 * * * * PATH=/path/to/mitsubishi-mini-split-controller/.venv/bin:/usr/bin:/bin /path/to/mitsubishi-mini-split-controller/scripts/kick.sh >> /path/to/mitsubishi-mini-split-controller/var/kick.log 2>&1
+```
+
+Add an `@reboot` line that runs `scripts/run_loop.sh` the same way if cron also starts the loop at boot.
+
+**systemd** (user units in `~/.config/systemd/user/`): run the loop as its own service with `Restart=always`, and let a timer run `kick.sh`, which restarts that service instead of starting a loop of its own. Stopping the service stops the loop.
+
+```ini
+# minisplit-loop.service
+[Unit]
+Description=Mini-split controller loop
+After=network-online.target
+
+[Service]
+WorkingDirectory=/path/to/mitsubishi-mini-split-controller
+EnvironmentFile=-/path/to/mitsubishi-mini-split-controller/.env
+Environment=PYTHONPATH=src
+ExecStart=/path/to/mitsubishi-mini-split-controller/.venv/bin/python -u -m minisplit_controller --loop
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+```ini
+# minisplit-kick.service
+[Unit]
+Description=Mini-split controller kick
+
+[Service]
+Type=oneshot
+Environment=PATH=/path/to/mitsubishi-mini-split-controller/.venv/bin:/usr/bin:/bin
+Environment="MSC_KICK_RESTART_CMD=systemctl --user restart minisplit-loop.service"
+ExecStart=/path/to/mitsubishi-mini-split-controller/scripts/kick.sh
+```
+
+```ini
+# minisplit-kick.timer
+[Unit]
+Description=Run the mini-split controller kick every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now minisplit-loop.service minisplit-kick.timer
+loginctl enable-linger "$USER"     # keep user services running when you are logged out
+systemctl --user stop minisplit-kick.timer minisplit-loop.service   # stop both (timer first, or the kick restarts the loop)
+```
+
+With systemd, use `systemctl --user stop` rather than `scripts/restore.sh` to stop the loop, then run `scripts/restore.sh` to put the unit back on stock settings.
 
 ### Log format
 
@@ -168,7 +253,7 @@ One row per cycle, plus an extra row for each regime, trim or setpoint change.
 | `heat_sp`, `cool_sp` | Heat and cool setpoints on the unit (°F) |
 | `fan` | Fan speed on the unit (`quiet`, `low`, `powerful`, `superPowerful`, or `auto` with staging off) |
 | `event` | `Reading` (no change), `Control change`, or `Error` |
-| `action` | What happened. Cycle rows start with `outdoor ...; T ... Tp ... S ...F/h ... g ...m trim ... regime ... ctgt ... h2c ... fan e ... stage ...` (ctgt is the cool target, or `table` without fresh outdoor data; h2c is the heat to cool threshold; fan e is the fan staging error, then the stage index and speed) and end with the changes sent |
+| `action` | What happened. Cycle rows start with `outdoor ...; T ... Tp ... S ...F/h ... g ...m trim ... regime ... ctgt ... h2c ... fan e ... stage ...` (ctgt is the cool target, or `fallback` without fresh outdoor data; h2c is the heat to cool threshold; fan e is the fan staging error, then the stage index and speed). In cool they add `u ... want ... floor ... ctrim ...` (the formula value, the setpoint it rounds to, the floor and the cool trim). When the sensor is the source they add `udiff ... ema ... 6h ...` (unit minus sensor offset, see Tuning) and a `sensor offset alert` note when the 6 h mean is out of range. Rows end with the changes sent |
 | `room_c` | The unit's own room reading (°C) |
 | `sensor_f` | Wireless sensor reading (°F), if available |
 | `unit_f` | The unit's own room reading (°F) |
@@ -183,40 +268,46 @@ All values live in `[tuning]` in the config file.
 
 **Heat setpoint table** (`heat_table`): Tp ≥ 70.6 → 66, ≥ 70.0 → 67, ≥ 69.4 → 68, ≥ 68.8 → 69, ≥ 68.2 → 70, else 71. Why these values: a mini-split heating in a small room overshoots its setpoint by a degree or more, so the setpoint has to sit below the target whenever the room is near it. Steps of 0.6°F in Tp map to 1°F of setpoint, which is the unit's own resolution, and the 66 to 71 range keeps it from ever blasting heat or shutting off for long.
 
-**Outdoor-adaptive cool target** (`cool_target_out_lo_f = 55`, `cool_target_out_hi_f = 80`, `cool_target_lo_f = 70.5`, `cool_target_hi_f = 73.5`, `adaptive_cool = true`): with an outdoor reading at most `outdoor_max_age_h` (2 h) old, the room cool target is linear in outdoor temperature:
+**Outdoor-adaptive cool target** (`adaptive_cool = true`, `cool_target_out_lo_f = 55`, `cool_target_out_hi_f = 80`, `cool_target_lo_f = 70.0`, `cool_target_hi_f = 73.5`, `cool_fallback_target_f = 72.0`): with an outdoor reading at most `outdoor_max_age_h` (2 h) old, the room cool target is linear in outdoor temperature and held flat outside that range:
 
 | Outdoor °F | ≤ 55 | 60 | 65 | 70 | 75 | ≥ 80 |
 |---|---|---|---|---|---|---|
-| Cool target °F | 70.5 | 71.1 | 71.7 | 72.3 | 72.9 | 73.5 |
+| Cool target °F | 70.0 | 70.7 | 71.4 | 72.1 | 72.8 | 73.5 |
 
-Why these values: on a cold day a sunny room cools off quickly once the sun goes, so cooling can aim close to the band without risk; on a hot day the walls and air stay warm, and aiming at 70°F would run the unit hard for little comfort gain. 70.5°F keeps the cold-day target inside the 69 to 71°F band, and 73.5°F on hot days, together with the 73 floor, keeps warm-day cooling about as gentle as the old fixed table.
+Without a fresh outdoor reading (or with `adaptive_cool = false`) the target is `cool_fallback_target_f`, 72.0°F. Why these values: on a cold day a sunny room cools off quickly once the sun goes, so cooling can aim at the middle of the band without risk; on a hot day the walls and air stay warm, and aiming at 70°F would run the unit hard for little comfort gain. Without outdoor data the controller cannot tell a cold day from a hot one, so it aims at the top of the band.
 
-**Adaptive cool setpoint** (`cool_offsets`, `cool_offsets_else = 71`): Tp = room + 0.25 h × slope, then the first row where Tp ≤ target + offset:
+**Cool setpoint formula** (`cool_gain = 1.5`, `cool_floor_below_f = 1.5`, `cool_max = 78`): Tp = room + 0.25 h × slope, then
 
-| Tp minus target | ≤ -0.6 | ≤ 0 | ≤ +0.6 | ≤ +1.2 | ≤ +1.8 | ≤ +2.4 | ≤ +3.0 | above |
-|---|---|---|---|---|---|---|---|---|
-| Cool setpoint °F | 78 | 77 | 76 | 75 | 74 | 73 | 72 | 71 |
+* u = target + cool trim − 1.5 × (Tp − target), kept between the floor and 78
+* floor = target − 1.5, rounded up: 69 on cold days (target 70.0), 72 on hot days (73.5), 71 without outdoor data (72.0)
+* setpoint = u rounded to the nearest degree, halves up
 
-Why: the same 0.6°F steps per 1°F of setpoint as the other tables (the unit's resolution), shifted so the setpoint is "parked" at 77 to 78 once the room is at or under the target, and only reaches the low 70s when the room is well above it.
+At the target the unit is asked for the target itself; each 1°F over asks for 1.5°F colder, each 1°F under for 1.5°F warmer. Examples on a cold day (target 70.0, floor 69, trim 0): Tp 69.0 → 72, 69.5 → 71, 70.0 → 70, 70.5 and up → 69. On a hot day (target 73.5, floor 72): Tp 73.5 → 74, 75.0 and up → 72.
 
-**Cool setpoint floor** (`cool_floor_table = [[68.0, 71]]`, `cool_floor = 73`, `cool_min = 71`): the adaptive setpoint never goes below 71 when it is under 68°F outside, and 73 otherwise (outdoor < threshold takes that row). Why: on a cool day the room sheds heat fast once the sun fades, so a short push to 71 trims the solar peak without leaving the room cold for long; on a warm day the same setpoint would keep the unit cooling hard for hours, so warm days stay in the old 73 to 78 range. An earlier version used a middle step (71 at 60°F or colder, 72 up to 67°F); in the author's log, afternoons still ran 73 to 74°F while the floor capped cooling at 72 to 73, so any day under 68°F outside now gets the 71 floor. Note the comparison is now strict (<), so a custom `cool_floor_table` written for the old rule may need its thresholds nudged up.
+**Cool hysteresis** (`cool_hyst_f = 0.75`): on entering cool, or with no current cool setpoint, the setpoint is set straight to u rounded. After that it changes only when u is at least 0.75°F away from it. Raises happen at once; drops follow the rate limits below. Why: rounding alone would flip the setpoint by 1°F every time u crossed a half degree, and the unit reacts to each change; 0.75 means u has clearly moved before the unit hears about it.
 
-**Fan staging** (`fan_staging = true`, `fan_stages`, `fan_down_hyst_f = 0.3`, `fan_down_cycles = 2`, `fan_max_up = 2`, `fan_cool_target_default_f = 72.0`): instead of leaving the fan on auto, the controller picks a speed from the error e. In cool, e = Tp minus the outdoor-adaptive cool target (72.0°F without a fresh outdoor reading). In heat, e = `target_f` (70°F) minus Tp. The first row with e ≤ threshold wins: ≤ 0.3 → quiet, ≤ 0.8 → low, ≤ 1.5 → low, ≤ 2.5 → powerful, else superPowerful. Rules:
+**Cool trim** (`cool_trim_band_f = 0.3`, `cool_trim_min = -2`, `cool_trim_max = 0`; uses `trim_every_h` and `trim_cover_h` like the heat trim): every 3 hours in cool, if the last 3 hours have at least 2.5 hours of readings, compare the time-weighted mean with the cool target at that moment. More than 0.3°F above lowers the cool trim by 1; more than 0.3°F below raises it by 1. It stays within −2 to 0, is separate from the heat trim, and resets to 0 on entering cool. Why: a unit that idles at its setpoint can leave the room settling a degree or so above the target; the trim pulls u down slowly in that case and can never push it above the formula.
 
-* Step up immediately, at most 2 stages per cycle. Because low appears twice (stages 1 and 2), a jump from quiet reaches only low on the first step-up cycle; powerful or superPowerful comes on the next cycle if e is still that high.
+**How the cool design got here.** An outdoor-adaptive cool target came first, feeding a stepped setpoint table with a fixed floor. A later revision added a lower floor on cool days, because afternoons still ran 73 to 74°F while the floor capped cooling a degree or two higher. A stronger stepped table followed, about 2°F colder against the target, after the room sat 1 to 2°F above the target for hours while the controller asked for only a mild setpoint. That table still let the unit idle at the target while the room settled about 1.5°F high, so a short-lived version re-centered the setpoint on the target and added the measured offset between the unit's own sensor and the room sensor into the setpoint. A design review replaced it the same evening: the offset came back out of control (it is only logged now), the floor became a smooth function of the target instead of a jump at one outdoor temperature, the setpoint became the formula above with a 0.75°F hysteresis, and the slow cool trim took over the job of correcting a room that settles above the target. The two "low" fan stages were merged at the same time.
+
+**Unit vs sensor offset** (`unit_diff_alpha = 0.3`, `unit_diff_max_f = 3.0`, `unit_diff_window_h = 6.0`, `unit_diff_alert_f = 1.5`): when the room reading comes from the wireless sensor, each cycle logs the unit's own reading minus the sensor reading, a smoothed value (EMA, weight 0.3, clamped to ±3°F), and its 6 h mean. When the 6 h mean is beyond ±1.5°F the log gets a `sensor offset alert` note. It has no effect on control. Why: a drifting or misplaced sensor shows up as a growing offset long before it shows up as discomfort, but feeding that offset into the setpoint made the loop harder to reason about.
+
+**Fan staging** (`fan_staging = true`, `fan_stages`, `fan_down_hyst_f = 0.3`, `fan_down_cycles = 2`, `fan_max_up = 2`, `fan_cool_target_default_f = 72.0`): instead of leaving the fan on auto, the controller picks a speed from the error e. In cool, e = Tp minus the outdoor-adaptive cool target (72.0°F without a fresh outdoor reading). In heat, e = `target_f` (70°F) minus Tp. The first row with e ≤ threshold wins: ≤ 0.3 → quiet, ≤ 1.5 → low, ≤ 2.5 → powerful, else superPowerful. Rules:
+
+* Step up immediately, at most 2 stages per cycle, so a jump from quiet can reach powerful in one cycle and superPowerful on the next.
 * Step down only after e is at least 0.3°F below the lower stage's threshold on 2 consecutive cycles.
 * After a gap over `gap_max_min` (30 minutes) since the last good cycle, hold the unit's current speed. If the unit reports no speed and there is no saved stage yet, the fan falls back to the fixed `fan` value (default `auto`).
 * A fan command is sent only when the speed changes. The vane is never touched.
 
-Why: staging keeps the unit quiet when the room is close and only pushes hard when it is clearly behind; the two "low" rows together cover 0.3 to 1.5°F, and the hysteresis keeps the fan from hunting between speeds each cycle. Speed names in `fan_stages` and `fan` are checked at config load against the speeds the Comfort client accepts (superQuiet, quiet, low, powerful, superPowerful, auto), and anything else is rejected with a config error. A particular unit may support fewer; the client rejects those when it sends. The client has no separate medium or high, so medium maps to low and high to powerful. Set `fan_staging = false` to go back to a fixed `fan` (default `auto`).
+Why: staging keeps the unit quiet when the room is close and only pushes hard when it is clearly behind, and the hysteresis keeps the fan from hunting between speeds each cycle. An earlier default had five stages with low listed twice (≤ 0.8 and ≤ 1.5); they are now one stage. Saved state stores the stage as an index, so the first cycle after upgrading remaps a state file written before the change once (0 → 0, 1 → 1, 2 → 1, 3 → 2, 4 → 3) and records `fan_stages_v = 2`. The remap assumes the old five-stage default; if you had a custom `fan_stages`, the saved index may land one stage off for a cycle or two until the normal staging rules correct it. Speed names in `fan_stages` and `fan` are checked at config load against the speeds the Comfort client accepts (superQuiet, quiet, low, powerful, superPowerful, auto), and anything else is rejected with a config error. A particular unit may support fewer; the client rejects those when it sends. The client has no separate medium or high, so medium maps to low and high to powerful. Set `fan_staging = false` to go back to a fixed `fan` (default `auto`).
 
-**Fallback cool table** (`cool_table`): used when the outdoor reading is missing or older than 2 hours (or `adaptive_cool = false`). Tp ≤ 71.4 → 78, ≤ 72.0 → 77, ≤ 72.6 → 76, ≤ 73.2 → 75, ≤ 73.8 → 74, else 73. Why: cooling exists only to take the edge off solar gain, so the setpoint backs off quickly as the room comes down rather than chasing 70°F and swinging the room cold. Without outdoor data the controller cannot tell a cold day from a hot one, so it keeps the conservative 73 floor.
+**Breaking config changes.** These `[tuning]` keys were removed with the cool formula: `cool_table`, `cool_offsets`, `cool_offsets_else`, `cool_floor_table`, `cool_floor` and `cool_min`. A config file that still sets one fails to load with `tuning key '<name>' was removed: ...` naming its replacement, rather than being silently ignored; delete the line and, if you had tuned it, use `cool_fallback_target_f`, `cool_gain`, `cool_floor_below_f` or `cool_max` instead. The `fan_stages` default changed from five rows to four (see Fan staging). Note that with outdoor data the lowest cool setpoint is now 69°F on cold days, where the older default stopped at 71°F.
 
-**Rate limits** (`step_min = 15`): the risky direction (raising heat, lowering cool) moves 1°F per 15 minutes; the safe direction moves at once. Why: that is roughly how long the room takes to show the effect of a 1°F change, so faster steps would stack up before they could be measured.
+**Rate limits** (`step_min = 15`, `cool_big_err_f = 1.5`, `cool_big_step = 2`, `cool_fallback_target_f = 72.0`): the risky direction (raising heat, lowering cool) moves at most once per 15 minutes; the safe direction moves at once. Heat rises 1°F per step. Cool drops 1°F per step, or 2°F when Tp is more than 1.5°F over the cool target (72.0°F when there is no fresh outdoor reading), and never past u rounded. Cool raises are immediate. Why: 15 minutes is roughly how long the room takes to show the effect of a change, so faster steps would stack up before they could be measured. The 2°F step is for the case where the room is clearly hot and 1°F per 15 minutes would take an hour to reach the setpoint the formula already asks for. `cool_fallback_target_f` (the cool target whenever there is no fresh outdoor reading, used by the formula, the floor and this step size) and the fan staging's `fan_cool_target_default_f` are independent settings that both default to 72.0°F; changing one does not change the other.
 
 **Trim limits** (`trim_every_h = 3`, `trim_deadband_f = 0.4`, `trim_min = -1`, `trim_max = 2`): every 3 hours, if at least 2.5 hours of readings exist and the mean is more than 0.4°F off target, shift the table by 1°F. Why: 3 hours is long enough to average out a heating cycle, the deadband keeps it from hunting, and the asymmetric limits allow more correction on cold nights (heat loss) than on mild days, where a lower setpoint risks underheating.
 
-**The 73°F solar-gain rule** (`sun_override_f = 73`, `heat_to_cool_f = 73`, `heat_to_cool_margin_f = 1.5`, `heat_to_cool_hold_min = 20`, `sun_dwell_h = 1`): switch to cool when the room holds at or above 73°F (or min(73, cool target + 1.5) with fresh outdoor data, so 72.0°F at 55°F or colder outside) for 20 minutes, at least 1 hour after the last switch, whatever the outdoor temperature. Why this value: with the heat setpoint already at its floor, the only thing that pushes a room past 73°F is solar gain. 73 is 2°F above the band, far enough that heating overshoot alone does not reach it, and the 20-minute hold filters out a single warm reading. The +1.5°F margin keeps the entry point 1.5°F above the cool target, so cooling starts only once the room is clearly past where it would settle, and on cold days it starts a little earlier, before the afternoon peak builds. Going back to heat needs 68°F held for 45 minutes and a 3-hour dwell, so a short cloud does not cause a flip.
+**The 73°F solar-gain rule** (`sun_override_f = 73`, `heat_to_cool_f = 73`, `heat_to_cool_margin_f = 1.5`, `heat_to_cool_hold_min = 20`, `sun_dwell_h = 1`): switch to cool when the room holds at or above 73°F (or min(73, cool target + 1.5) with fresh outdoor data, so 71.5°F at 55°F or colder outside) for 20 minutes, at least 1 hour after the last switch, whatever the outdoor temperature. Why this value: with the heat setpoint already at its floor, the only thing that pushes a room past 73°F is solar gain. 73 is 2°F above the band, far enough that heating overshoot alone does not reach it, and the 20-minute hold filters out a single warm reading. The +1.5°F margin keeps the entry point 1.5°F above the cool target, so cooling starts only once the room is clearly past where it would settle, and on cold days it starts a little earlier, before the afternoon peak builds. Going back to heat needs 68°F held for 45 minutes and a 3-hour dwell, so a short cloud does not cause a flip.
 
 **Outdoor gate** (`outdoor_min_f = 62`): the other way into cool needs outdoor air at 62°F or warmer and a 3-hour dwell. Why: on a warm day the room can drift up without sun, and requiring warm outdoor air plus the full 3-hour dwell keeps a brief warm spell on a cold day from starting a cooling cycle. 62°F is a starting point; adjust it for your climate.
 
@@ -242,7 +333,7 @@ Why: staging keeps the unit quiet when the room is close and only pushes hard wh
 
 * **Unofficial.** This project is not affiliated with or endorsed by Mitsubishi Electric. It uses the same cloud API as the Mitsubishi Comfort app, which is undocumented and can change or break at any time.
 * **Cloud dependent.** Every reading and command goes through Mitsubishi's servers. If the cloud or your internet is down, the unit simply keeps its last settings. The client backs off when rate limited and re-logs in at most once per 10 minutes.
-* **Conservative by design.** The controller never turns a unit on, never changes the vane, and leaves a switched-off or offline unit alone. Setpoints are clamped to 66 to 71°F for heat and 73 to 78°F for cool by default (down to 71°F for cool only when a fresh outdoor reading says it is under 68°F outside), and the config loader rejects values outside safe ranges.
+* **Conservative by design.** The controller never turns a unit on, never changes the vane, and leaves a switched-off or offline unit alone. Setpoints are clamped to 66 to 71°F for heat and, for cool, from the floor (69 to 72°F with a fresh outdoor reading, 71°F without) to 78°F by default, and the config loader rejects values outside safe ranges (no cool floor below 64°F, no cool maximum above 88°F).
 * **Simulated charts.** The README charts come from a simulation, not measurements. Your room, unit and climate will differ, so tune and watch the log.
 * **No warranty.** Use at your own risk; see the license.
 
