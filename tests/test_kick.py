@@ -31,7 +31,7 @@ def test_once_ok_and_note(settings):
     c = make(settings, FakeClient(LIVE, sensor={"temp_f": 69.0, "age_seconds": 60}))
     assert c.once("kick: heartbeat 15 min old; ran one cycle") == 0
     assert "kick: heartbeat 15 min old" in rows(settings.log_csv)[-1]["action"]
-    assert c.last_ok_ts() == pytest.approx(NOW)
+    assert c.last_ok_ts() == pytest.approx(NOW, abs=1)
 
 
 def test_once_error_exit_code_prints_reason_and_note(settings, capsys):
@@ -130,23 +130,23 @@ def _run_loop_until_first_cycle(monkeypatch, settings, t0):
 def test_loop_skips_after_recent_outside_cycle(monkeypatch, settings):
     settings.interval_s, settings.skip_recent_s = 600, 300
     _write_state(settings, NOW - 100)                 # kick cycle 100 s ago
-    assert _run_loop_until_first_cycle(monkeypatch, settings, NOW) == pytest.approx(NOW + 500)
+    assert _run_loop_until_first_cycle(monkeypatch, settings, NOW) == pytest.approx(NOW + 500, abs=1)
 
 
 def test_loop_runs_now_when_outside_cycle_is_old(monkeypatch, settings):
     settings.interval_s, settings.skip_recent_s = 600, 300
     _write_state(settings, NOW - 400)
-    assert _run_loop_until_first_cycle(monkeypatch, settings, NOW) == pytest.approx(NOW)
+    assert _run_loop_until_first_cycle(monkeypatch, settings, NOW) == pytest.approx(NOW, abs=1)
 
 
 def test_loop_caps_skip_window_at_half_interval(monkeypatch, settings):
     settings.interval_s, settings.skip_recent_s = 600, 500   # unvalidated Settings: the loop still caps at 300
     _write_state(settings, NOW - 400)
-    assert _run_loop_until_first_cycle(monkeypatch, settings, NOW) == pytest.approx(NOW)
+    assert _run_loop_until_first_cycle(monkeypatch, settings, NOW) == pytest.approx(NOW, abs=1)
     c = make(settings, FakeClient(LIVE))
     assert c.skip_until(NOW) is None
     _write_state(settings, NOW - 200)
-    assert c.skip_until(NOW) == pytest.approx(NOW + 400)
+    assert c.skip_until(NOW) == pytest.approx(NOW + 400, abs=1)
 
 
 def test_skip_recent_config_and_clamp(tmp_path):
